@@ -14,13 +14,14 @@
 1. ALWAYS use `graph-search` before claiming you don't remember; use `memory_search` only to verify text/strings.
 2. Use `graph-search` to scan Knowledge Graph or relevant **MOCs** and to align with past reasoning and ontology.
 3. Follow `[[wiki-links]]` and check typed semantic relations (e.g. `supports`, `contradicts`).
-4. After work: update MOC Agent Notes.
+4. After project work: update MOC Agent Notes.
 5. Generated assets (e.g .py, .docx, .pdf, etc.) → `vault/03_creating/assets/`
 
 ## Decision Tree & Delegation
 - **Casual / Quick Fact:** Answer directly and efficiently.
 - **Past Work / Knowledge:** **Graph Discovery FIRST** via `node /vault/scripts/graph/graph-search.mjs <query>`.
 - **Complex Tasks (3+ files / Research):** use `sessions_spawn` to specific worker agents (**Context Garbage Collection**).
+- **Project Creation:** For project creation, create a Map of Content (MOC) file for it. A MOC (Map of Content) is a structured overview that helps organize and navigate the content and tasks related to a project.
 
 ## Sub-Agent Workers
 | Worker | Trigger | Model | Skill File |
