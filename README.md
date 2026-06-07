@@ -317,6 +317,7 @@ The agent operates under a strict set of mandates derived from the `AGENTS.md` s
 2. Use `graph-search` to scan Knowledge Graph or relevant **MOCs** and to align with past reasoning and ontology.
 3. Follow `[[wiki-links]]` and check typed semantic relations (e.g. `supports`, `contradicts`).
 4. After work: update MOC Agent Notes.
+5. Generated assets (e.g .py, .docx, .pdf, etc.) → `vault/03_creating/assets/`
 
 ## Decision Tree & Delegation
 - **Casual / Quick Fact:** Answer directly and efficiently.
