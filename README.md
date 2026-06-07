@@ -323,7 +323,7 @@ The agent operates under a strict set of mandates derived from the `AGENTS.md` s
 - **Casual / Quick Fact:** Answer directly and efficiently.
 - **Past Work / Knowledge:** **Graph Discovery FIRST** via `node /vault/scripts/graph/graph-search.mjs <query>`.
 - **Complex Tasks (3+ files / Research):** use `sessions_spawn` to specific worker agents (**Context Garbage Collection**).
-- **Project Creation:** For project creation, create a Map of Content (MOC) file for it. A MOC (Map of Content) is a structured overview that helps organize and navigate the content and tasks related to a project.
+- **Project Creation:** Use format template MOC `vault/06_system/template-MOC.md` and create a Map of Content (MOC) file inside `vault/01_thinking/moc`.
 
 ## Sub-Agent Workers
 | Worker | Trigger | Model | Skill File |
