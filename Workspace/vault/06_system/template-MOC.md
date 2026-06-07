@@ -1,4 +1,4 @@
-Note: MOC filename MUST follow the "Notes Are Named As Claims" philosophy and MUST end with `-MOC` (e.g., `claim-name-MOC.md`).
+**Note:** MOC filename MUST follow the "Notes Are Named As Claims" philosophy and MUST end with `-MOC` (e.g., `claim-name-MOC.md`).
 
 # [Claim-Name]-MOC
 
