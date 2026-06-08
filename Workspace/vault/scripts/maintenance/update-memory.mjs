@@ -8,7 +8,7 @@ const __dirname = path.dirname(__filename);
 const WORKSPACE_ROOT = path.resolve(__dirname, '../../../');
 
 const MEMORY_FILE = path.join(WORKSPACE_ROOT, 'MEMORY.md');
-const THINKING_PATH = path.join(WORKSPACE_ROOT, 'vault', '01_thinking');
+const MOC_PATH = path.join(WORKSPACE_ROOT, 'vault', '01_thinking', 'moc');
 const CREATING_PATH = path.join(WORKSPACE_ROOT, 'vault', '03_creating');
 const PUBLISHED_PATH = path.join(WORKSPACE_ROOT, 'vault', '04_published');
 
@@ -50,13 +50,13 @@ function updateMemory() {
         }
 
         // 3. Sync Active Projects from MOCs (Thinking)
-        if (fs.existsSync(THINKING_PATH)) {
-            const files = fs.readdirSync(THINKING_PATH).filter(f => f.endsWith('-MOC.md'));
+        if (fs.existsSync(MOC_PATH)) {
+            const files = fs.readdirSync(MOC_PATH).filter(f => f.endsWith('-MOC.md'));
             let projectTable = '| Project | Status | Pointer |\n|---------|--------|---------|';
             if (files.length > 0) {
                 files.forEach(file => {
                     const projectName = file.replace('-MOC.md', '').replace(/_/g, ' ');
-                    projectTable += `\n| ${projectName} | Active | \`vault/01_thinking/${file}\``;
+                    projectTable += `\n| ${projectName} | Active | \`vault/01_thinking/moc/${file}\``;
                 });
             } else {
                 projectTable += `\n| No active projects | - | - |`;
