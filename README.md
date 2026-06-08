@@ -337,10 +337,12 @@ The agent operates under a strict set of mandates derived from the `AGENTS.md` s
 ## Verification (PreCompletion)
 Before finishing, the agent must compare output against the original intent. For code, run tests and employ **loop detection** (stop if 3+ edits fail).
 ```
-**Optional Tools** - [RTK CLI Proxy](https://github.com/rtk-ai/rtk)
-To optimize token consumption and enhance the efficiency of AI agent shell interactions, this workspace utilizes the RTK (Token-Reduction Kit) proxy. By wrapping standard shell commands with the rtk prefix, the system minimizes redundant output and optimizes the communication overhead between the LLM and the host operating system, ensuring faster and more cost-effective executions. For more details and installation, visit the RTK CLI Proxy GitHub Repository.
 ---
 
+**Optional Tools** - [RTK CLI Proxy](https://github.com/rtk-ai/rtk)
+To optimize token consumption and enhance the efficiency of AI agent command shell interactions.
+
+---
 ## ⚙️ OpenClaw.json Configuration Example
 
 To ensure the agent operates with maximum efficiency, the following `openclaw.json` configuration is recommended.
