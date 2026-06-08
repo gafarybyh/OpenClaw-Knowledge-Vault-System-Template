@@ -319,7 +319,7 @@ The agent operates under a strict set of mandates derived from the `AGENTS.md` s
 1. ALWAYS use `graph-search` before claiming you don't remember; use `memory_search` only to verify text/strings.
 2. Use `graph-search` to scan Knowledge Graph or relevant **MOCs** and to align with past reasoning and ontology.
 3. Follow `[[wiki-links]]` and check typed semantic relations (e.g. `supports`, `contradicts`).
-4. After project work: update MOC Agent Notes.
+4. After project work: update MOC and execute `node vault/scripts/graph/indexer.mjs` to synchronize `graph.json`.
 5. Generated assets (e.g .py, .docx, .pdf, etc.) → `vault/03_creating/assets/`
 
 ## Decision Tree & Delegation
