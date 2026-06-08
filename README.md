@@ -380,7 +380,7 @@ To ensure the agent operates with maximum efficiency, the following `openclaw.js
   },
   "tools": {
     "profile": "coding",
-    "alsoAllow": ["sessions_spawn", "subagents"]
+    "alsoAllow": ["sessions_spawn", "sessions_yield", "subagents"]
   },
   "hooks": {
     "internal": {
