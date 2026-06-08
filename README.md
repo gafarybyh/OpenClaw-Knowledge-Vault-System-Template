@@ -312,6 +312,9 @@ The agent operates under a strict set of mandates derived from the `AGENTS.md` s
 3. **Location Scan:** Check `MEMORY.md` for active projects and key pointers.
 4. **Confirmation:** After completing steps 1-3, confirm with: Reply the user message.
 
+## Command Tool Protocol
+**[MANDATORY]** All `exec` calls MUST use the `rtk` proxy to minimize tokens: `rtk <cmd>` for any shell command.
+
 ## Memory & Vault Orientation
 1. ALWAYS use `graph-search` before claiming you don't remember; use `memory_search` only to verify text/strings.
 2. Use `graph-search` to scan Knowledge Graph or relevant **MOCs** and to align with past reasoning and ontology.
@@ -334,7 +337,8 @@ The agent operates under a strict set of mandates derived from the `AGENTS.md` s
 ## Verification (PreCompletion)
 Before finishing, the agent must compare output against the original intent. For code, run tests and employ **loop detection** (stop if 3+ edits fail).
 ```
-
+**Optional Tools - ![RTK CLI Proxy](https://github.com/rtk-ai/rtk)**
+To optimize token consumption and enhance the efficiency of AI agent shell interactions, this workspace utilizes the RTK (Token-Reduction Kit) proxy. By wrapping standard shell commands with the rtk prefix, the system minimizes redundant output and optimizes the communication overhead between the LLM and the host operating system, ensuring faster and more cost-effective executions. For more details and installation, visit the RTK CLI Proxy GitHub Repository.
 ---
 
 ## ⚙️ OpenClaw.json Configuration Example
