@@ -3,8 +3,8 @@
 ## Orientation Protocol (Context Triangulation)
 **MANDATORY** at the start of every session before responding to the user:
 1. **Rules Load:** Read `vault/01_thinking/AGENT-BEHAVIORAL-RULEBOOK.md` (self-improvement results).
-2. **Strategy Scan:** Read relevant **MOCs** (Map of Contents) in `vault/01_thinking/moc` for the big picture.
-3. **Location Scan:** Check `MEMORY.md` for active projects and key pointers.
+2. **Location Scan:** Check `MEMORY.md` for active projects (MOC) and key pointers.
+3. **Strategy Scan:** Read relevant **MOCs** (Map of Contents) for the big picture.
 4. **Confirmation:** After completing steps 1-3, confirm with: Reply the user message.
 
 ## Command Tool Protocol
