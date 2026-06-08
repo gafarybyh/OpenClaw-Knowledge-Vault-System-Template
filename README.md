@@ -296,7 +296,7 @@ The logic for these triggers resides in `vault/scripts/`:
 
 In this system, the value is not found in any single note, but in the **links between them**. By prioritizing the connection over the content, the vault becomes a living organism that grows more intelligent with every interaction.
 
-**Key Operating Principle:** Always perform **Context Triangulation** (Rules $\rightarrow$ MOC $\rightarrow$ Memory) before acting.
+**Key Operating Principle:** Always perform **Context Triangulation** (Rules $\rightarrow$ Memory $\rightarrow$ MOC) before acting.
 
 ## 🤖 Agent Operating Principles Example
 
@@ -308,8 +308,8 @@ The agent operates under a strict set of mandates derived from the `AGENTS.md` s
 ## Orientation Protocol (Context Triangulation)
 **MANDATORY** at the start of every session before responding to the user:
 1. **Rules Load:** Read `vault/01_thinking/AGENT-BEHAVIORAL-RULEBOOK.md` (self-improvement results).
-2. **Strategy Scan:** Read relevant **MOCs** (Map of Contents) in `vault/01_thinking/moc` for the big picture.
-3. **Location Scan:** Check `MEMORY.md` for active projects and key pointers.
+2. **Location Scan:** Check `MEMORY.md` for active projects (MOC) and key pointers.
+3. **Strategy Scan:** Read relevant **MOCs** (Map of Contents) for the big picture.
 4. **Confirmation:** After completing steps 1-3, confirm with: Reply the user message.
 
 ## Command Tool Protocol
