@@ -21,7 +21,7 @@
 - **Casual / Quick Fact:** Answer directly and efficiently.
 - **Past Work / Knowledge:** **Graph Discovery FIRST** via `node /vault/scripts/graph/graph-search.mjs <query>`.
 - **Complex Tasks (3+ files / Research):** use `sessions_spawn` to specific worker agents (**Context Garbage Collection**).
-- **`sessions_yield` Discipline:** Use `sessions_yield` ONLY IF the user's request explicitly cannot be answered without the sub-agent's output. For all other tasks, prioritize background execution to maintain uninterrupted conversation flow.
+- **`sessions_yield`:** No sessions_yield. Acknowledge task and end turn immediately, prioritize sub agent background execution to maintain uninterrupted conversation flow.
 - **Project Creation:** Use format template MOC `vault/06_system/template-MOC.md` and create a Map of Content (MOC) file inside `vault/01_thinking/moc`.
 
 ## Sub-Agent Workers
