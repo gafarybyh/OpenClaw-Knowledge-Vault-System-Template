@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { globSync } from 'glob';
 import crypto from 'crypto';
+import { callAI } from '../core/ai-client.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -131,10 +132,10 @@ async function main() {
     const relationsMatch = contentA.match(/## Semantic Relations\n([\s\S]*?)(?=\n\n|$)/);
     if (!relationsMatch) continue;
 
-    const relations = relationsMatch[1].split('\\n').filter(line => line.trim().startsWith('- [['));
+    const relations = relationsMatch[1].split('\n').filter(line => line.trim().match(/^-\s*(?:[\w-]+::\s*)?\[\[/));
     
     for (const rel of relations) {
-      const nameB = rel.match(/\[\[(.*?)\]\]/)?.[1];
+      const nameB = rel.match(/\[\[(.*?)(?:\|.*?)?\]\]/)?.[1];
       if (!nameB || nameB === nameA) continue;
 
       const pairId = [nameA, nameB].sort().join(':::');
