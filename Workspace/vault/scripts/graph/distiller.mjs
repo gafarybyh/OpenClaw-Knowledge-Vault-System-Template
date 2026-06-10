@@ -46,7 +46,7 @@ RULES:
 - Be concise but comprehensive. Capture specifics, not just generalities.
 - Include subjective preferences and working decisions — these are knowledge too.
 - When in doubt about whether something is worth saving, SAVE IT. Missing knowledge is worse than an extra note.
-- Use Markdown for all content.
+- Use Markdown for all content and use english language.
 - If truly nothing worth saving (no facts, no decisions, no preferences, no context), return {"notes": []}.
 - NO preamble, NO markdown code blocks, NO conversational filler.`;
 
