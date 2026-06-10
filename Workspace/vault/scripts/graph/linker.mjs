@@ -72,12 +72,12 @@ function hashContent(text) {
 function hashSemanticContent(text) {
   // Step 1: Hapus frontmatter
   const withoutFrontmatter = text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
-  
+
   // Step 2: Hapus Semantic Relations section
   const lines = withoutFrontmatter.split('\n');
   const bodyLines = [];
   let inSemanticSection = false;
-  
+
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed === '## Semantic Relations') {
@@ -89,7 +89,7 @@ function hashSemanticContent(text) {
     }
     if (!inSemanticSection) bodyLines.push(line);
   }
-  
+
   return crypto.createHash('md5').update(normalizeText(bodyLines.join('\n'))).digest('hex');
 }
 
@@ -123,7 +123,7 @@ function extractKeywords(name) {
     .replace(/^(ref|claim|concept|tool|moc|index|daily|weekly)-/, '')
     .replace(/\.md$/, '')
     .split(/[-_\s]+/)
-    .filter(w => w.length > 2 && !['the','and','for','with','from','this','that'].includes(w));
+    .filter(w => w.length > 2 && !['the', 'and', 'for', 'with', 'from', 'this', 'that'].includes(w));
 }
 
 function detectNoteType(name, content, linkCount) {
@@ -194,7 +194,7 @@ async function processBatch(items, batchSize, processor) {
   const results = [];
   for (let i = 0; i < items.length; i += batchSize) {
     const batch = items.slice(i, i + batchSize);
-    
+
     // Process batch items sequentially to avoid 429 (Too Many Requests)
     for (const item of batch) {
       try {
@@ -344,12 +344,12 @@ async function validateRelation(fileA, contentA, fileB, contentB) {
         try {
           return JSON.parse(content.substring(start, end + 1));
         } catch (parseErr) {
-          logError(`Relation validation JSON parse failed: ${parseErr.message}`);
+          logError('linker.mjs', `Relation validation JSON parse failed: ${parseErr.message}`);
         }
       }
     }
   } catch (err) {
-    logError(`Relation validation failed: ${err.message}`);
+    logError('linker.mjs', `Relation validation failed: ${err.message}`);
   }
 
   return { related: false };
@@ -362,14 +362,16 @@ async function getValidatedRelation(a, contentA, b, contentB, validationCache) {
   const hashA = hashSemanticContent(contentA);
   const hashB = hashSemanticContent(contentB);
   const pairKey = [a, b].sort().join('||');
-  
+
   const cached = validationCache[pairKey];
   if (cached && cached.hashA === hashA && cached.hashB === hashB) {
+    // Memberikan indikator visual bahwa AI tidak dipanggil ulang
+    console.error(`⚡ [Cache Hit] AI skipped for ${a} <-> ${b}`);
     return cached.result;
   }
 
   const result = await validateRelation(a, contentA, b, contentB);
-  
+
   // Simpan ke cache
   validationCache[pairKey] = {
     hashA,
@@ -377,7 +379,7 @@ async function getValidatedRelation(a, contentA, b, contentB, validationCache) {
     result,
     timestamp: new Date().toISOString()
   };
-  
+
   return result;
 }
 
@@ -393,23 +395,23 @@ function parseExistingLinks(filePath) {
   const links = [];
   const sections = content.split('## Semantic Relations');
   if (sections.length < 2) return links;
-  
+
   const lines = sections[1].split('\n');
   const typedRe = /^-\s*([\w-]+)::\s*\[\[(.*?)\]\](?:\s*\((.*?)\))?/;
   const wikiStartRe = /^-\s*\[\[(.*?)(?:\|.*?)?\]\]\s*\(/;
-  
+
   let i = 0;
   while (i < lines.length) {
     const line = lines[i].trim();
     if (!line.startsWith('- ')) { i++; continue; }
-    
+
     const typedMatch = line.match(typedRe);
     if (typedMatch) {
       links.push({ type: typedMatch[1], target: typedMatch[2].split('|')[0], reason: typedMatch[3] || '' });
       i++;
       continue;
     }
-    
+
     const wikiMatch = line.match(wikiStartRe);
     if (wikiMatch) {
       let reason = line.substring(line.indexOf('(') + 1);
@@ -423,10 +425,10 @@ function parseExistingLinks(filePath) {
       i = j || i + 1;
       continue;
     }
-    
+
     i++;
   }
-  
+
   return links;
 }
 
@@ -447,7 +449,7 @@ async function addSemanticLink(filePath, target, type, reason) {
       console.error(`      ⏭️ Already correct: ${type}:: [[${target}]]`);
       return null;
     }
-    
+
     const anyTypedRegex = new RegExp(`^-\\s*(\\w+)::\\s*\\[\\[${escapeRegex(target)}`, 'm');
     const anyMatch = c.match(anyTypedRegex);
     if (anyMatch) {
@@ -457,16 +459,16 @@ async function addSemanticLink(filePath, target, type, reason) {
       console.error(`      🔄 Updated: ${oldType} → ${type}`);
       return c.replace(anyMatch[0], newLine);
     }
-    
+
     const clean = reason.replace(/[\r\n]+/g, ' ').trim();
     const line = `- ${type}:: [[${target}]] (${clean})`;
-    
+
     const wikiStart = new RegExp(`^-\\s*\\[\\[${escapeRegex(target)}(?:\\|.*?)?\\]\\]\\s*\\(`);
     const lines = c.split('\n');
     const out = [];
     let i = 0;
     let replaced = false;
-    
+
     while (i < lines.length) {
       if (wikiStart.test(lines[i]) && !replaced) {
         let block = lines[i];
@@ -485,16 +487,16 @@ async function addSemanticLink(filePath, target, type, reason) {
       out.push(lines[i]);
       i++;
     }
-    
+
     if (replaced) {
       console.error(`      🔄 Replaced wiki link`);
       return out.join('\n');
     }
-    
+
     if (!c.includes('## Semantic Relations')) c += '\n\n## Semantic Relations\n';
     return c.replace('## Semantic Relations\n', `## Semantic Relations\n${line}\n`);
   });
-  
+
   return res !== null;
 }
 
@@ -574,7 +576,7 @@ async function main() {
     const inScope = f.includes('01_thinking') || f.includes('02_reference');
     const fileName = path.basename(f);
     const isExcluded = EXCLUDED_FOLDERS.some(folder => f.includes(folder)) ||
-                       EXCLUDED_FILES.includes(fileName);
+      EXCLUDED_FILES.includes(fileName);
     return inScope && !isExcluded;
   });
 
@@ -799,7 +801,7 @@ async function main() {
       if (IS_DEEP_VERIFY && !link.inferred) {
         const sourceSemanticDirty = semanticDirtyFiles.has(a);
         const targetSemanticDirty = semanticDirtyFiles.has(b);
-        
+
         if (!sourceSemanticDirty && !targetSemanticDirty) {
           console.error(`      ⏭️ Stable link, skip: ${link.type}:: [[${b}]]`);
           continue;
