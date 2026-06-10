@@ -6,4 +6,4 @@ metadata:
 ---
 
 # Memory Fresh Start
-Runs memory synchronization and graph indexing before compact, new or reset session begins.
+Runs vault memory synchronization and graph indexing, new or reset session begins.
