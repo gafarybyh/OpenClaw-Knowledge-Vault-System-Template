@@ -126,6 +126,7 @@ function updateBehavioralRuleNodes() {
       fs.mkdirSync(rulesDir, { recursive: true });
     }
 
+    const generatedFiles = new Set();
     const lines = content.split(/\r?\n/);
     let currentCategory = 'general';
     let isBehavioralRulesSection = false;
@@ -162,6 +163,7 @@ function updateBehavioralRuleNodes() {
         }
         const fileName = `${baseName || 'rule'}.md`;
         const filePath = path.join(rulesDir, fileName);
+        generatedFiles.add(fileName);
 
         let confidence = 0.90;
         let impact = 'medium';
@@ -212,6 +214,25 @@ ${ruleText}
 `;
         fs.writeFileSync(filePath, newContent, 'utf8');
         log.info(`Updated behavioral rule node: ${fileName}`);
+      }
+    }
+
+    // Garbage Collection: Hapus aturan usang
+    if (generatedFiles.size > 0) {
+      const existingFiles = fs.readdirSync(rulesDir).filter(f => f.endsWith('.md'));
+      let deletedCount = 0;
+      for (const f of existingFiles) {
+        if (!generatedFiles.has(f)) {
+          try {
+            fs.unlinkSync(path.join(rulesDir, f));
+            deletedCount++;
+          } catch (e) {
+            log.error(`Failed to delete obsolete rule ${f}: ${e.message}`);
+          }
+        }
+      }
+      if (deletedCount > 0) {
+        log.info(`🗑️ Garbage collected ${deletedCount} obsolete behavioral rules.`);
       }
     }
   } catch (err) {
