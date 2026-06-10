@@ -48,6 +48,7 @@ Information in this workspace flows through three specialized loops to ensure co
 ### 🟪 The Reflection Loop (Analysis $\rightarrow$ Systemic Growth)
 **Path:** `Session Review` $\rightarrow$ `Reflection Engine` $\rightarrow$ `Systemic Insights` $\rightarrow$ `Updated Rulebook`.
 
+![Processing Layer](assets/processing-layer.png)
 ---
 
 ## 🗺️ Vault Structure & Roles
