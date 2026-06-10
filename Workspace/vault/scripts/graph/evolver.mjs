@@ -176,7 +176,7 @@ ${result.grouped_notes.map(n => `- [[${n}]]`).join('\n')}
         const node = nodes[nodeName];
         if (node) {
           const nodePath = path.resolve(WORKSPACE_ROOT, node.path);
-          addConceptLink(nodePath, fileName);
+          addConceptLink(nodePath, fileName.replace(/\.md$/, ''));
         }
       });
     } else {
@@ -203,7 +203,7 @@ function addConceptLink(filePath, conceptFileName) {
       content += '\n\n## Semantic Relations\n';
     }
     
-    content = content.replace('## Semantic Relations\n', `## Semantic Relations\n${linkLine}\n`);
+    content = content.replace(/## Semantic Relations\r?\n/, `## Semantic Relations\n${linkLine}\n`);
     safeWriteFile(filePath, content);
   } catch (e) {
     console.warn(`⚠️ Failed to add recursive link to ${filePath}: ${e.message}`);
