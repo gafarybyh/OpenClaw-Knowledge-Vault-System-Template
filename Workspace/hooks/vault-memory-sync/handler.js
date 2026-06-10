@@ -419,7 +419,7 @@ const handler = async (event) => {
     }
   })();
 
-  event.messages.push('🔄 New session started. Memory sync is running in the background...');
+  event.messages.push('✅ New session started. Vault memory sync is running in the background...');
 };
 
 module.exports = handler;
