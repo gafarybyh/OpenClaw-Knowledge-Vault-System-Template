@@ -181,9 +181,10 @@ async function updateRulebook(synthesis) {
   }
 
   if (sectionExists) {
-    // Replace existing synthesized section with new one
+    // Append new rules to the existing section to preserve history
+    const newRulesOnly = newRulesMarkdown.replace('\\n\\n' + sectionHeader + '\\n', '');
     const regex = new RegExp(`${sectionHeader}[\\s\\S]*?(?=\\n#|$)`, 'g');
-    rulebookContent = rulebookContent.replace(regex, newRulesMarkdown);
+    rulebookContent = rulebookContent.replace(regex, match => match.trimEnd() + '\\n' + newRulesOnly);
   } else {
     // Append to the end of the file
     rulebookContent += '\n' + newRulesMarkdown;
@@ -195,6 +196,36 @@ async function updateRulebook(synthesis) {
   fs.renameSync(tmpPath, RULEBOOK_PATH);
   
   log.success('✅ Rulebook updated with synthesized behavioral rules.');
+}
+
+function cleanupOldReflections() {
+  try {
+    const files = fs.readdirSync(REFLECTIONS_DIR)
+      .filter(f => f.endsWith('-claimed.md'))
+      .map(f => ({
+        name: f,
+        path: path.join(REFLECTIONS_DIR, f),
+        mtime: fs.statSync(path.join(REFLECTIONS_DIR, f)).mtimeMs
+      }))
+      .sort((a, b) => b.mtime - a.mtime); // Terbaru di atas
+
+    // Simpan 10 laporan terbaru saja
+    if (files.length > 10) {
+      const toDelete = files.slice(10);
+      let count = 0;
+      toDelete.forEach(file => {
+        try {
+          fs.unlinkSync(file.path);
+          count++;
+        } catch (e) {}
+      });
+      if (count > 0) {
+        log.info(`🧹 Garbage collected ${count} old reflection reports (kept latest 10).`);
+      }
+    }
+  } catch (err) {
+    log.error(`⚠️ Failed to cleanup old reflections: ${err.message}`);
+  }
 }
 
 async function main() {
@@ -228,6 +259,10 @@ async function main() {
     } else {
       log.info('ℹ️ No new unclaimed reflection files found to synthesize.');
     }
+    
+    // Jalankan Garbage Collection
+    cleanupOldReflections();
+    
   } catch (err) {
     console.error('Reflection Synthesizer Error:', err.message);
     logError('reflection-synthesizer.mjs', err);
