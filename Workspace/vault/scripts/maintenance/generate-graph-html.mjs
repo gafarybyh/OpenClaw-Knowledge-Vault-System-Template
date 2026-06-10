@@ -28,7 +28,7 @@ function detectFolder(filePath = '') {
 }
 
 function generateGraphHtml() {
-  log.step('🚀 Generating Vault Graph View (Enhanced v2)...');
+  log.step('🚀 Generating Vault Graph View...');
 
   if (!fs.existsSync(GRAPH_PATH)) {
     log.error(`❌ Error: Graph file not found at ${GRAPH_PATH}`);
@@ -62,7 +62,9 @@ function generateGraphHtml() {
         degree,
         wordCount,
         folder,
-        links: node.links || []
+        links: node.links || [],
+        typedLinks: node.typedLinks || [],
+        preview: node.contentPreview || ''
       },
       font: {
         color: '#EAF0FF',
@@ -87,25 +89,43 @@ function generateGraphHtml() {
       }
     });
 
+    const processEdge = (linkId, type = null) => {
+      if (!rawNodes[linkId]) return;
+      const key = id < linkId ? `${id}__${linkId}` : `${linkId}__${id}`;
+      if (edgeSet.has(key)) return;
+      edgeSet.add(key);
+
+      const edge = {
+        from: id,
+        to: linkId,
+        width: type ? 1.5 : 1,
+        color: {
+          color: type ? 'rgba(124, 156, 255, 0.4)' : 'rgba(200, 210, 230, 0.25)',
+          highlight: 'rgba(255,255,255,0.9)',
+          hover: 'rgba(255,255,255,0.8)'
+        },
+        smooth: { type: 'dynamic', roundness: 0.35 },
+        selectionWidth: 2,
+        hoverWidth: 1.5
+      };
+
+      // if (type) {
+      //   edge.label = type;
+      //   edge.font = { align: 'middle', size: 10, color: 'rgba(200,210,230,0.7)', strokeWidth: 0, background: 'rgba(10,10,10,0.6)' };
+      // }
+
+      edges.push(edge);
+    };
+
+    if (Array.isArray(node.typedLinks)) {
+      for (const tLink of node.typedLinks) {
+        processEdge(tLink.target, tLink.type);
+      }
+    }
+
     if (Array.isArray(node.links)) {
       for (const linkId of node.links) {
-        if (!rawNodes[linkId]) continue;
-        const key = id < linkId ? `${id}__${linkId}` : `${linkId}__${id}`;
-        if (edgeSet.has(key)) continue;
-        edgeSet.add(key);
-        edges.push({
-          from: id,
-          to: linkId,
-          width: 1,
-          color: {
-            color: 'rgba(200, 210, 230, 0.25)',
-            highlight: 'rgba(255,255,255,0.9)',
-            hover: 'rgba(255,255,255,0.8)'
-          },
-          smooth: { type: 'dynamic', roundness: 0.35 },
-          selectionWidth: 2,
-          hoverWidth: 1.5
-        });
+        processEdge(linkId, null);
       }
     }
   }
@@ -231,15 +251,15 @@ function generateGraphHtml() {
     .hint { margin-top: 12px; font-size: 11px; color: var(--muted); line-height: 1.5; padding: 10px; background: rgba(255,255,255,0.02); border-radius: 10px; border: 1px solid rgba(255,255,255,0.03); }
     .hint kbd { background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 10px; border: 1px solid rgba(255,255,255,0.15); }
 
-    .zoom-controls { position: absolute; bottom: 24px; right: 24px; z-index: 20; display: flex; flex-direction: column; gap: 6px; animation: slideInRight 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+    .zoom-controls { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 20; display: flex; flex-direction: row; gap: 6px; animation: slideUp 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
     .zoom-btn { width: 36px; height: 36px; border-radius: 10px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 300; backdrop-filter: blur(16px); transition: 0.15s ease; box-shadow: var(--shadow); }
     .zoom-btn:hover { background: rgba(255,255,255,0.08); transform: scale(1.05); }
 
     #inspector { position: absolute; top: 24px; right: 24px; width: 360px; max-height: calc(100vh - 48px); z-index: 20; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); overflow-y: auto; padding: 24px; box-shadow: var(--shadow); animation: slideInRight 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards; transition: transform 0.3s ease, opacity 0.3s ease; }
-    #inspector.hidden { transform: translateX(calc(100% + 40px)); opacity: 0; pointer-events: none; }
-    .inspector-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.05); }
-    .inspector-title { font-size: 20px; font-weight: 600; letter-spacing: -0.3px; word-break: break-word; flex: 1; padding-right: 10px; }
-    .inspector-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 20px; padding: 4px; border-radius: 8px; transition: 0.15s ease; flex-shrink: 0; }
+    #inspector.hidden { animation: none !important; transform: translateX(calc(100% + 40px)) !important; opacity: 0 !important; pointer-events: none !important; }
+    .inspector-header { position: relative; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-right: 32px; }
+    .inspector-title { font-size: 20px; font-weight: 600; letter-spacing: -0.3px; word-break: break-word; }
+    .inspector-close { position: absolute; top: -4px; right: -8px; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 24px; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 8px; transition: 0.15s ease; z-index: 2; }
     .inspector-close:hover { color: var(--text); background: rgba(255,255,255,0.08); }
 
     .empty-state { color: var(--muted); display: flex; align-items: center; justify-content: center; height: 100%; text-align: center; font-size: 14px; font-weight: 500; flex-direction: column; gap: 12px; }
@@ -275,8 +295,8 @@ function generateGraphHtml() {
     @media (max-width: 760px) {
       .panel { width: calc(100vw - 24px); left: 12px; top: 12px; max-height: calc(100vh - 24px); }
       #inspector { position: fixed; top: auto; bottom: 0; left: 0; right: 0; width: 100%; max-height: 50vh; border-radius: var(--radius) var(--radius) 0 0; animation: slideUp 0.4s ease forwards; }
-      #inspector.hidden { transform: translateY(100%); }
-      .zoom-controls { bottom: 12px; right: 12px; }
+      #inspector.hidden { animation: none !important; transform: translateY(100%) !important; opacity: 0 !important; pointer-events: none !important; }
+      .zoom-controls { bottom: 12px; }
     }
     *:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     button:focus-visible, input:focus-visible { outline-offset: 2px; }
@@ -384,6 +404,7 @@ function generateGraphHtml() {
     let activeSearch = '';
     let focusMode = false;
     let inspectorVisible = false;
+    let inspectorOpening = false;
     let selectedNodeId = null;
 
     const AppConfig = {
@@ -509,25 +530,44 @@ function generateGraphHtml() {
       const connectedHtml = connected.map(id => {
         const rn = nodeMap.get(id);
         const rp = rn ? (FOLDER_COLORS[rn.group] || FOLDER_COLORS.default) : FOLDER_COLORS.default;
-        return '<div class="related-node" onclick="focusNode(' + JSON.stringify(id).replace(/"/g, '&quot;') + ')" role="button" tabindex="0">' +
-          '<span class="related-dot" style="background:' + rp.bg + '; border: 2px solid ' + rp.border + '"></span>' + escapeHtml(id) + '</div>';
+        
+        let relType = '';
+        if (node.meta.typedLinks) {
+          const tl = node.meta.typedLinks.find(t => t.target === id);
+          if (tl) relType = '<span style="color:#8fa3c9; font-size:10px; border:1px solid rgba(255,255,255,0.1); padding:2px 6px; border-radius:4px; margin-left:auto; background:rgba(255,255,255,0.03);">' + escapeHtml(tl.type) + '</span>';
+        }
+        if (!relType && rn && rn.meta.typedLinks) {
+          const tl = rn.meta.typedLinks.find(t => t.target === nodeId);
+          if (tl) relType = '<span style="color:#8fa3c9; font-size:10px; border:1px solid rgba(255,255,255,0.1); padding:2px 6px; border-radius:4px; margin-left:auto; background:rgba(255,255,255,0.03);">&larr; ' + escapeHtml(tl.type) + '</span>';
+        }
+
+        return '<div class="related-node" onclick="focusNode(' + JSON.stringify(id).replace(/"/g, '&quot;') + ')" ' +
+               'onmouseenter="highlightNode(' + JSON.stringify(id).replace(/"/g, '&quot;') + ')" ' +
+               'onmouseleave="unhighlightNode()" role="button" tabindex="0">' +
+          '<span class="related-dot" style="background:' + rp.bg + '; border: 2px solid ' + rp.border + '"></span>' + escapeHtml(id) + relType + '</div>';
       }).join('');
 
       inspector.innerHTML =
-        '<div class="inspector-header"><div class="inspector-title">' + escapeHtml(node.label) + '</div>' +
-        '<button class="inspector-close" onclick="closeInspector()" aria-label="Close inspector">&#215;</button></div>' +
-        '<div class="info-block"><div class="info-label">Folder</div><div class="info-value">' +
-        '<span class="folder-tag"><span class="dot-inline" style="background:' + palette.bg + '; border: 2px solid ' + palette.border + '"></span>' + escapeHtml(node.meta.folder) + '</span></div></div>' +
+        '<div class="inspector-header">' +
+        '<div class="inspector-title">' + escapeHtml(node.label) + '</div>' +
+        '<button class="inspector-close" id="inspectorCloseBtn" aria-label="Close inspector">&#215;</button>' +
+        '</div>' +
+        '<div class="info-block"><div class="info-label">Folder</div><div class="info-value"><span class="folder-tag"><span class="dot-inline" style="background:' + palette.bg + '; border: 2px solid ' + palette.border + '"></span>' + escapeHtml(node.meta.folder) + '</span></div></div>' +
         '<div class="info-block"><div class="info-label">Path</div><div class="info-value mono">' + escapeHtml(node.meta.path) + '</div></div>' +
+        (node.meta.preview ? '<div class="info-block"><div class="info-label">Preview</div><div class="info-value" style="background:rgba(255,255,255,0.03); padding:12px; border-radius:8px; border:1px solid rgba(255,255,255,0.05); font-size:13px; max-height:200px; overflow-y:auto; line-height:1.5; color:#cbd5e1; white-space:pre-wrap;">' + escapeHtml(node.meta.preview) + '</div></div>' : '') +
         '<div class="info-block"><div class="info-label">Statistics</div><div class="info-value" style="display:flex;gap:16px;">' +
         '<span><strong>' + node.meta.wordCount.toLocaleString() + '</strong> words</span>' +
         '<span><strong>' + node.meta.degree + '</strong> connections</span></div></div>' +
         '<div class="info-block"><div class="info-label">Connected Nodes (' + connected.length + ')</div><div class="related-list">' +
         (connectedHtml || '<div style="color: var(--muted); font-size: 13px; padding: 8px 0;">No connections</div>') + '</div></div>';
 
-      inspector.classList.remove('hidden');
-      inspectorVisible = true;
-      selectedNodeId = nodeId;
+        document.getElementById('inspectorCloseBtn').addEventListener('click', function(e) { e.stopPropagation(); closeInspector(); });
+        inspector.addEventListener('click', function(e) { e.stopPropagation(); });
+        // Delay setting visible flag to avoid immediate document click hide
+        inspector.classList.remove('hidden');
+        inspectorOpening = true;
+        setTimeout(() => { inspectorVisible = true; inspectorOpening = false; }, 0);
+        selectedNodeId = nodeId;
     }
 
     window.closeInspector = function() {
@@ -535,6 +575,17 @@ function generateGraphHtml() {
       inspectorVisible = false;
       selectedNodeId = null;
       network.unselectAll();
+      applyNodeState();
+    };
+
+    window.highlightNode = function(hoverId) {
+      if (!selectedNodeId) return;
+      network.selectNodes([selectedNodeId, hoverId]);
+    };
+    
+    window.unhighlightNode = function() {
+      if (!selectedNodeId) return;
+      network.selectNodes([selectedNodeId]);
     };
 
     window.focusNode = function(nodeId) {
@@ -656,11 +707,23 @@ function generateGraphHtml() {
       try {
         const canvas = container.querySelector('canvas');
         if (!canvas) { showToast('Canvas not found', 'error'); return; }
+        // Use devicePixelRatio for crisp HD export and ensure dark background
+        const scale = Math.max(2, window.devicePixelRatio || 1);
+        const temp = document.createElement('canvas');
+        temp.width = canvas.width * scale;
+        temp.height = canvas.height * scale;
+        const ctx = temp.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        // Fill dark background (fallback to #050505)
+        ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--bg') || '#050505';
+        ctx.fillRect(0, 0, temp.width, temp.height);
+        // Draw original canvas scaled up for HD output
+        ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, canvas.width * scale, canvas.height * scale);
         const link = document.createElement('a');
         link.download = 'vault-graph-' + new Date().toISOString().slice(0, 19).replace(/:/g, '-') + '.png';
-        link.href = canvas.toDataURL('image/png');
+        link.href = temp.toDataURL('image/png');
         link.click();
-        showToast('Graph exported successfully!', 'success');
+        showToast('Graph exported in HD successfully!', 'success');
       } catch (err) { showToast('Export failed: ' + err.message, 'error'); }
     });
 
@@ -680,17 +743,11 @@ function generateGraphHtml() {
       });
     });
 
-    network.on('click', (params) => {
-      if (params.nodes && params.nodes.length > 0) {
-        const nodeId = params.nodes[0];
-        focusMode = true;
-        focusNode(nodeId);
-      } else {
-        focusMode = false;
-        applyNodeState();
-        if (!inspectorVisible) {
-          inspector.innerHTML = '<div class="empty-state"><div class="empty-state-icon">&#128302;</div><div>Select a node to inspect</div></div>';
-        }
+    // Hide inspector when clicking outside of it
+    document.addEventListener('click', function(e) {
+      if (e.target.closest('#network')) return; // Let network.on('click') handle canvas clicks
+      if (inspectorVisible && !inspectorOpening && !inspector.contains(e.target) && !e.target.closest('.inspector-close')) {
+        closeInspector();
       }
     });
 
@@ -706,6 +763,15 @@ function generateGraphHtml() {
             modal.document.close();
           }
         }
+      }
+    });
+
+    network.on('click', (params) => {
+      if (params.nodes && params.nodes.length > 0) {
+        focusNode(params.nodes[0]);
+      } else {
+        closeInspector();
+        applyNodeState();
       }
     });
 
