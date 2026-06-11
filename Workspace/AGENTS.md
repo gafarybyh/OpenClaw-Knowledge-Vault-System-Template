@@ -11,7 +11,7 @@
 **[MANDATORY]** All `exec` calls MUST use the `rtk` proxy to minimize tokens: `rtk <cmd>` for any shell command.
 
 ## Memory & Vault Orientation
-1. Use graph-search before claiming information is unavailable when the task may relate to previous work, projects (MOCs), notes, or stored knowledge.
+1. Use `graph-search` before claiming information is unavailable when the task may relate to previous work, projects (MOCs), notes, or stored knowledge.
 2. Use `memory_search` only to verify text/strings.
 3. Follow `[[wiki-links]]` and check typed semantic relations (e.g. `supports`, `contradicts`).
 4. After project work: update MOC and execute `node vault/scripts/graph/indexer.mjs` to synchronize `graph.json`.
