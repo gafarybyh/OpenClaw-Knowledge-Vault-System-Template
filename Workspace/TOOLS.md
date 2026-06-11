@@ -1,6 +1,6 @@
 # TOOLS: Raynor Shortcuts
 
-- `message`: Send/manage telegram messages with attachments (files, images, etc.) to targets.
+- `message`: Send attachments (files, images, etc.) to chat.
 - `graph-search`: Traverse Knowledge Graph via run `node /vault/scripts/graph/graph-search.mjs <query>`.
 - `memory_search`: Semantic search in memory and past sessions.
 - `sessions_spawn`: Offload heavy work to specialized workers (Context GC).
