@@ -3,11 +3,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { logError } from './logger.mjs';
 
-// Maximum number of retries for failed requests
-const MAX_RETRIES = 3;
-// Base delay for exponential backoff in milliseconds
-const BASE_RETRY_DELAY = 1000;
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const WORKSPACE_ROOT = path.resolve(__dirname, '../../../');
@@ -29,7 +24,7 @@ export function loadEnv() {
       });
     }
   } catch (e) {
-    logError('ai-client', 'Failed to load .env file: ' + e.message);
+    logError('Failed to load .env file: ' + e.message);
   }
 }
 
@@ -58,16 +53,16 @@ export const AI_CONFIG = {
 
 /**
  * Generate embedding vector for a given text
- * @param {string} text
+ * @param {string} text 
  * @returns {Promise<number[]>}
  */
 export async function getEmbedding(text) {
   const { url, model, key } = AI_CONFIG.embedding;
   
   try {
-    const response = await fetchWithRetry(url, {
+    const response = await fetch(url, {
       method: 'POST',
-      headers: {
+      headers: { 
         'Content-Type': 'application/json',
         ...(key && { 'Authorization': `Bearer ${key}` })
       },
@@ -81,13 +76,9 @@ export async function getEmbedding(text) {
     const data = await response.json();
     // Handle different API response formats (Ollama vs others)
     // Ollama often returns 'embeddings' as an array of arrays
-    const result = data.embedding || data.embeddings?.[0] || data.data?.[0]?.embedding;
-    
-    // Apply request delay after successful call
-    await sleep(AI_CONFIG.requestDelay);
-    return result;
+    return data.embedding || data.embeddings?.[0] || data.data?.[0]?.embedding;
   } catch (e) {
-    logError('ai-client', `Embedding failed: ${e.message}`);
+    logError(`Embedding failed: ${e.message}`);
     throw e;
   }
 }
@@ -101,42 +92,6 @@ export function sleep(ms) {
 }
 
 /**
- * Execute a fetch request with retry logic for rate limiting and service unavailability
- * @param {string} url - API endpoint
- * @param {Object} options - Fetch options
- * @param {number} retryCount - Current retry count
- * @returns {Promise<Response>}
- */
-async function fetchWithRetry(url, options, retryCount = 0) {
-  try {
-    const response = await fetch(url, options);
-    
-    // If we get a rate limit or service unavailable error, retry with exponential backoff
-    if (response.status === 429 || response.status === 503) {
-      if (retryCount < MAX_RETRIES) {
-        const delay = BASE_RETRY_DELAY * Math.pow(2, retryCount);
-        logError('ai-client', `Rate limited or service unavailable (${response.status}). Retrying in ${delay}ms... (Attempt ${retryCount + 1}/${MAX_RETRIES})`);
-        await sleep(delay);
-        return fetchWithRetry(url, options, retryCount + 1);
-      } else {
-        throw new Error(`Max retries (${MAX_RETRIES}) exceeded for ${url}. Status: ${response.status}`);
-      }
-    }
-    
-    return response;
-  } catch (error) {
-    // For network errors, also implement retry logic
-    if (retryCount < MAX_RETRIES) {
-      const delay = BASE_RETRY_DELAY * Math.pow(2, retryCount);
-      logError('ai-client', `Network error: ${error.message}. Retrying in ${delay}ms... (Attempt ${retryCount + 1}/${MAX_RETRIES})`);
-      await sleep(delay);
-      return fetchWithRetry(url, options, retryCount + 1);
-    }
-    throw error;
-  }
-}
-
-/**
  * Call AI with automatic fallback mechanism
  * @param {Array} messages - Array of {role, content}
  * @param {Object} options - Optional overrides (model, temperature, etc)
@@ -144,60 +99,56 @@ async function fetchWithRetry(url, options, retryCount = 0) {
  */
 export async function callAI(messages, options = {}) {
   const { primary, fallback } = AI_CONFIG;
-  let result = null;
-
-  // Helper function to execute AI call with retry and delay
-  async function executeAICall(config, isPrimary = true) {
-    try {
-      const { url, model, key } = config;
-      const isGemini = url.includes('gemini');
-      const finalUrl = isGemini ? `${url}?key=${key}` : url;
-      
-      const headers = {
-        'Content-Type': 'application/json',
-        ...(!isGemini && { 'Authorization': `Bearer ${key}` })
-      };
-      
-      const response = await fetchWithRetry(finalUrl, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify({
-          model: options.model || model,
-          messages: messages,
-          temperature: options.temperature ?? 0.3,
-          ...options.extraParams
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error(`${isPrimary ? 'Primary' : 'Fallback'} AI error: ${response.status}`);
-      }
-      
-      const data = await response.json();
-      result = data.choices?.[0]?.message?.content || data.content;
-      
-      // Apply request delay after successful call
-      await sleep(AI_CONFIG.requestDelay);
-      return result;
-    } catch (e) {
-      logError('ai-client', `${isPrimary ? 'Primary' : 'Fallback'} AI failed: ${e.message}${isPrimary ? '. Switching to fallback...' : ''}`);
-      throw e;
-    }
-  }
 
   // 1. Try Primary AI
   try {
-    return await executeAICall(primary, true);
+    const response = await fetch(primary.url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${primary.key}`
+      },
+      body: JSON.stringify({
+        model: options.model || primary.model,
+        messages: messages,
+        temperature: options.temperature ?? 0.3,
+        ...options.extraParams
+      })
+    });
+
+    if (!response.ok) throw new Error(`Primary AI error: ${response.status}`);
+    
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || data.content;
   } catch (e) {
-    // Primary failed, continue to fallback
+    logError(`Primary AI failed: ${e.message}. Switching to fallback...`);
   }
 
   // 2. Try Fallback AI
   try {
-    return await executeAICall(fallback, false);
+    const isGemini = fallback.url.includes('gemini');
+    const finalUrl = isGemini ? `${fallback.url}?key=${fallback.key}` : fallback.url;
+    
+    const response = await fetch(finalUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(!isGemini && { 'Authorization': `Bearer ${fallback.key}` })
+      },
+      body: JSON.stringify({
+        model: options.model || fallback.model,
+        messages: messages,
+        temperature: options.temperature ?? 0.3,
+        ...options.extraParams
+      })
+    });
+
+    if (!response.ok) throw new Error(`Fallback AI error: ${response.status}`);
+    
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || data.content;
   } catch (e) {
-    logError('ai-client', `Fallback AI also failed: ${e.message}. All AI providers are unavailable...`);
-    // Return null instead of throwing to maintain existing behavior
-    return null;
+    logError(`Fallback AI also failed: ${e.message}. All AI providers are unavailable...`);
+    // throw new Error(`All AI providers failed. Last error: ${e.message}`);
   }
 }
