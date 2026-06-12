@@ -46,7 +46,8 @@ RULES:
 - Be concise but comprehensive. Capture specifics, not just generalities.
 - Include subjective preferences and working decisions — these are knowledge too.
 - When in doubt about whether something is worth saving, SAVE IT. Missing knowledge is worse than an extra note.
-- Use Markdown for all content and use english language.
+- Use Markdown for all content.
+- Always in english language.
 - If truly nothing worth saving (no facts, no decisions, no preferences, no context), return {"notes": []}.
 - NO preamble, NO markdown code blocks, NO conversational filler.`;
 
@@ -160,17 +161,32 @@ function cleanJsonResponse(text) {
 
 async function extractNotes(conversation) {
   try {
-    const content = await callAI([
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: conversation },
-    ], { temperature: 0.2 });
+    // Add timeout to AI call
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error('AI call timed out after 10 seconds')), 10000);
+  });
+  const contentPromise = callAI([
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user', content: conversation },
+  ], { temperature: 0.2 });
+  
+  const content = await Promise.race([contentPromise, timeoutPromise]);
+
+    console.error('🔍 Raw AI output:', content);
 
     if (typeof content === 'string') {
       const cleanedContent = cleanJsonResponse(content);
+      console.error('🧹 Cleaned JSON:', cleanedContent);
       if (cleanedContent) {
-        const parsed = JSON.parse(cleanedContent);
-        console.error('✅ AI extraction successful.');
-        return parsed;
+        try {
+          const parsed = JSON.parse(cleanedContent);
+          console.error('✅ AI extraction successful.');
+          return parsed;
+        } catch (parseErr) {
+          console.error(`🚨 JSON parse error in cleaned content: ${parseErr.message}`);
+          logError('distiller.mjs', parseErr);
+          return { notes: [] };
+        }
       }
     }
   } catch (err) {
