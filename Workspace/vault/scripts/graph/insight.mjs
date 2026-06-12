@@ -35,6 +35,7 @@
 
 import { logError } from '../core/logger.mjs';
 import { callAI } from '../core/ai-client.mjs';
+import { parseAIJson } from '../core/json-parser.mjs';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import path from 'path';
@@ -68,21 +69,7 @@ You must output a single, valid JSON object containing:
 
 CRITICAL: Output ONLY the JSON. No explanations, no markdown wrapper, no conversational text.`;
 
-function cleanJsonResponse(text) {
-  if (!text) return null;
-  let cleaned = text.trim();
-  const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/i;
-  const match = cleaned.match(codeBlockRegex);
-  if (match) {
-    cleaned = match[1].trim();
-  }
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  if (start === -1 || end === -1 || end <= start) {
-    return null;
-  }
-  return cleaned.substring(start, end + 1).trim();
-}
+
 
 function cosineSimilarity(vecA, vecB) {
   if (!vecA || !vecB || vecA.length === 0 || vecB.length === 0) return 0;
@@ -116,11 +103,12 @@ async function synthesizeInsight(notesContent) {
     ], { temperature: 0.1 });
 
     if (typeof content === 'string') {
-      const cleaned = cleanJsonResponse(content);
-      if (cleaned) {
+      const { data, error } = parseAIJson(content, 'insight.mjs');
+      if (data) {
         console.log('✅ AI insight synthesis successful.');
-        return JSON.parse(cleaned);
+        return data;
       }
+      if (error) console.warn(`⚠️ Insight JSON parse failed: ${error}`);
     }
   } catch (err) {
     console.warn(`⚠️ AI synthesis failed: ${err.message}`);
