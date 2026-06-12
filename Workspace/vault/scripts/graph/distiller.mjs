@@ -152,18 +152,10 @@ function sanitizeFilename(filename) {
 
 async function extractNotes(conversation) {
   try {
-    // Add timeout to AI call
-  let timeoutId;
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(`AI call timed out after ${REQUEST_TIMEOUT_MS / 1000}s`)), REQUEST_TIMEOUT_MS);
-  });
-  const contentPromise = callAI([
+  const content = await callAI([
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: conversation },
-  ], { temperature: 0.2 });
-  
-  const content = await Promise.race([contentPromise, timeoutPromise])
-    .finally(() => clearTimeout(timeoutId));
+  ], { temperature: 0.2, timeoutMs: REQUEST_TIMEOUT_MS });
 
     if (content == null) {
       console.error('⚠️ AI returned empty response (both providers may have failed).');
