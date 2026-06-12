@@ -100,6 +100,8 @@ export function sleep(ms) {
 export async function callAI(messages, options = {}) {
   const { primary, fallback } = AI_CONFIG;
 
+  const timeoutMs = options.timeoutMs || 30000;
+
   // 1. Try Primary AI
   try {
     const response = await fetch(primary.url, {
@@ -113,7 +115,8 @@ export async function callAI(messages, options = {}) {
         messages: messages,
         temperature: options.temperature ?? 0.3,
         ...options.extraParams
-      })
+      }),
+      signal: AbortSignal.timeout(timeoutMs)
     });
 
     if (!response.ok) {
@@ -145,7 +148,8 @@ export async function callAI(messages, options = {}) {
         messages: messages,
         temperature: options.temperature ?? 0.3,
         ...options.extraParams
-      })
+      }),
+      signal: AbortSignal.timeout(timeoutMs)
     });
 
     if (!response.ok) {
