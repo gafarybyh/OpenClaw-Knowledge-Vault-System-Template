@@ -15,6 +15,7 @@
 
 import { logError } from '../core/logger.mjs';
 import { callAI, getEmbedding as coreGetEmbedding, AI_CONFIG, sleep } from '../core/ai-client.mjs';
+import { parseAIJson } from '../core/json-parser.mjs';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -338,15 +339,9 @@ async function validateRelation(fileA, contentA, fileB, contentB) {
     ], { temperature: 0 });
 
     if (content && typeof content === 'string') {
-      const start = content.indexOf('{');
-      const end = content.lastIndexOf('}');
-      if (start !== -1 && end > start) {
-        try {
-          return JSON.parse(content.substring(start, end + 1));
-        } catch (parseErr) {
-          logError('linker.mjs', `Relation validation JSON parse failed: ${parseErr.message}`);
-        }
-      }
+      const { data, error } = parseAIJson(content, 'linker.mjs');
+      if (data) return data;
+      if (error) logError('linker.mjs', `Relation validation JSON parse failed: ${error}`);
     }
   } catch (err) {
     logError('linker.mjs', `Relation validation failed: ${err.message}`);
