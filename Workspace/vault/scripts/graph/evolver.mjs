@@ -39,7 +39,7 @@ async function evolveOntology(notesList) {
     const content = await callAI([
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: prompt },
-    ], { temperature: 0.1 });
+    ], { temperature: 0.1, timeoutMs: REQUEST_TIMEOUT_MS });
 
     if (typeof content === 'string') {
       const { data, error } = parseAIJson(content, 'evolver.mjs');
