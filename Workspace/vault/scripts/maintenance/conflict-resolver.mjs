@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { globSync } from 'glob';
 import crypto from 'crypto';
 import { callAI } from '../core/ai-client.mjs';
+import { parseAIJson } from '../core/json-parser.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -49,11 +50,9 @@ async function analyzeConflict(fileA, contentA, fileB, contentB) {
     ], { temperature: 0 });
 
     if (content) {
-      const start = content.indexOf('{');
-      const end = content.lastIndexOf('}');
-      if (start !== -1 && end > start) {
-        return JSON.parse(content.substring(start, end + 1));
-      }
+      const { data, error } = parseAIJson(content, 'conflict-resolver.mjs');
+      if (data) return data;
+      if (error) log.warn(`⚠️ Conflict resolver JSON parse failed: ${error}`);
     }
   } catch (err) {
     console.warn(`⚠️ Conflict analysis failed: ${err.message}`);
