@@ -41,7 +41,7 @@ async function consolidateWithAI(currentRulebook, newLearnings) {
     const prompt = SYSTEM_PROMPT.replace('{CURRENT_RULEBOOK}', currentRulebook).replace('{NEW_LEARNINGS}', newLearnings);
     const content = await callAI([
       { role: 'user', content: prompt },
-    ], { temperature: 0.1 });
+    ], { temperature: 0.1, timeoutMs: REQUEST_TIMEOUT_MS });
 
     if (typeof content === 'string') {
       return content.replace(/^```markdown\n?/, '').replace(/\n?```$/, '').trim();
