@@ -126,7 +126,7 @@ async function collectLearnings(conversation) {
     const content = await callAI([
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: conversation },
-    ], { temperature: 0 });
+    ], { temperature: 0, timeoutMs: REQUEST_TIMEOUT_MS });
 
     if (content) {
       const { data, error } = parseAIJson(content, 'learning-collector.mjs');
