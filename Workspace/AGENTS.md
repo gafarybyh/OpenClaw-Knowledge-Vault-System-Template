@@ -22,7 +22,7 @@
 - **Casual / Quick Fact:** Answer directly and efficiently.
 - **Past Work / Knowledge:** **Graph Discovery FIRST** via `node /vault/scripts/graph/graph-search.mjs <query>`.
 - **Sub Agents:** Use `sessions_spawn` **only for tasks explicitly listed in the *Sub-Agent Workers* table**—no ad-hoc spawns without user approval (**Context Garbage Collection**).
-- **`sessions_yield`:** Avoid sessions_yield. Acknowledge task and end turn immediately, prioritize sub agent background execution to maintain uninterrupted conversation flow.
+- **`sessions_yield`:** Acknowledge task and end turn immediately, prioritize sub agent background execution to maintain uninterrupted conversation flow.
 - **Project Creation:** Use format template MOC `vault/06_system/template-MOC.md` and create a Map of Content (MOC) file inside `vault/01_thinking/moc`.
 
 ## Sub-Agent Workers
