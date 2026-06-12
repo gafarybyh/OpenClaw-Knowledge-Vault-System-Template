@@ -1,5 +1,6 @@
 import { logError, log } from '../core/logger.mjs';
 import { callAI } from '../core/ai-client.mjs';
+import { parseAIJson } from '../core/json-parser.mjs';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import path from 'path';
@@ -85,21 +86,7 @@ function stripUntrustedMetadata(text) {
   return cleaned.join('\n').trim();
 }
 
-function cleanJsonResponse(text) {
-  if (!text) return null;
-  let cleaned = text.trim();
-  const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/i;
-  const match = cleaned.match(codeBlockRegex);
-  if (match) {
-    cleaned = match[1].trim();
-  }
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  if (start === -1 || end === -1 || end <= start) {
-    return null;
-  }
-  return cleaned.substring(start, end + 1).trim();
-}
+
 
 function parseTranscript(transcriptPath) {
   if (!fs.existsSync(transcriptPath)) return [];
@@ -142,11 +129,12 @@ async function collectLearnings(conversation) {
     ], { temperature: 0 });
 
     if (content) {
-      const cleaned = cleanJsonResponse(content);
-      if (cleaned) {
+      const { data, error } = parseAIJson(content, 'learning-collector.mjs');
+      if (data) {
         log.info('[Collector] ✅ AI learning collection successful.');
-        return JSON.parse(cleaned);
+        return data;
       }
+      if (error) log.error(`[Collector] ⚠️ JSON parse failed: ${error}`);
     }
   } catch (err) {
     log.error(`[Collector] ⚠️ AI learning collection failed: ${err.message}`);
