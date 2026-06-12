@@ -232,18 +232,7 @@ Use headings to create a **logical outline**:
 
 ## Tool Usage
 
-### Allowed
-
 - pls-office-docs
-
-### Avoid
-
-- browser
-- graph-search
-- memory_search
-- web_search
-
-Research and discovery belong to Raynor or researcher workers.
 
 ---
 
