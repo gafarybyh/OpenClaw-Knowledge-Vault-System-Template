@@ -1,5 +1,6 @@
 import { logError } from '../core/logger.mjs';
 import { callAI } from '../core/ai-client.mjs';
+import { parseAIJson } from '../core/json-parser.mjs';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -147,46 +148,38 @@ function sanitizeFilename(filename) {
   return `${base || 'note'}.md`;
 }
 
-function cleanJsonResponse(text) {
-  if (!text) return null;
-  let cleaned = text.trim();
-  const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/i;
-  const match = cleaned.match(codeBlockRegex);
-  if (match) cleaned = match[1].trim();
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  if (start === -1 || end === -1 || end <= start) return null;
-  return cleaned.substring(start, end + 1).trim();
-}
+
 
 async function extractNotes(conversation) {
   try {
     // Add timeout to AI call
+  let timeoutId;
   const timeoutPromise = new Promise((_, reject) => {
-    setTimeout(() => reject(new Error('AI call timed out after 10 seconds')), 10000);
+    timeoutId = setTimeout(() => reject(new Error(`AI call timed out after ${REQUEST_TIMEOUT_MS / 1000}s`)), REQUEST_TIMEOUT_MS);
   });
   const contentPromise = callAI([
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: conversation },
   ], { temperature: 0.2 });
   
-  const content = await Promise.race([contentPromise, timeoutPromise]);
+  const content = await Promise.race([contentPromise, timeoutPromise])
+    .finally(() => clearTimeout(timeoutId));
 
-    console.error('🔍 Raw AI output:', content);
+    if (content == null) {
+      console.error('⚠️ AI returned empty response (both providers may have failed).');
+      return { notes: [] };
+    }
+
+    console.error('🔍 AI output received, length:', content?.length ?? 0);
 
     if (typeof content === 'string') {
-      const cleanedContent = cleanJsonResponse(content);
-      console.error('🧹 Cleaned JSON:', cleanedContent);
-      if (cleanedContent) {
-        try {
-          const parsed = JSON.parse(cleanedContent);
-          console.error('✅ AI extraction successful.');
-          return parsed;
-        } catch (parseErr) {
-          console.error(`🚨 JSON parse error in cleaned content: ${parseErr.message}`);
-          logError('distiller.mjs', parseErr);
-          return { notes: [] };
-        }
+      const { data, error } = parseAIJson(content, 'distiller.mjs');
+      if (data) {
+        console.error('✅ AI extraction successful.');
+        return data;
+      }
+      if (error) {
+        console.error(`🚨 JSON parse failed: ${error}`);
       }
     }
   } catch (err) {
