@@ -24,7 +24,7 @@ export function loadEnv() {
       });
     }
   } catch (e) {
-    logError('Failed to load .env file: ' + e.message);
+    logError('ai-client.mjs', e);
   }
 }
 
@@ -78,7 +78,7 @@ export async function getEmbedding(text) {
     // Ollama often returns 'embeddings' as an array of arrays
     return data.embedding || data.embeddings?.[0] || data.data?.[0]?.embedding;
   } catch (e) {
-    logError(`Embedding failed: ${e.message}`);
+    logError('ai-client.mjs', e);
     throw e;
   }
 }
@@ -116,12 +116,17 @@ export async function callAI(messages, options = {}) {
       })
     });
 
-    if (!response.ok) throw new Error(`Primary AI error: ${response.status}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      logError('ai-client.mjs', new Error(`Primary AI HTTP ${response.status}: ${errorText}`));
+      throw new Error(`Primary AI error: ${response.status}`);
+    }
     
     const data = await response.json();
+    console.error('🔄 Primary AI responded OK.');
     return data.choices?.[0]?.message?.content || data.content;
   } catch (e) {
-    logError(`Primary AI failed: ${e.message}. Switching to fallback...`);
+    logError('ai-client.mjs', new Error(`Primary AI failed: ${e.message}. Switching to fallback...`));
   }
 
   // 2. Try Fallback AI
@@ -143,12 +148,17 @@ export async function callAI(messages, options = {}) {
       })
     });
 
-    if (!response.ok) throw new Error(`Fallback AI error: ${response.status}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      logError('ai-client.mjs', new Error(`Fallback AI HTTP ${response.status}: ${errorText}`));
+      throw new Error(`Fallback AI error: ${response.status}`);
+    }
     
     const data = await response.json();
+    console.error('🔄 Fallback AI responded OK.');
     return data.choices?.[0]?.message?.content || data.content;
   } catch (e) {
-    logError(`Fallback AI also failed: ${e.message}. All AI providers are unavailable...`);
+    logError('ai-client.mjs', new Error(`All AI providers failed: ${e.message}`));
     // throw new Error(`All AI providers failed. Last error: ${e.message}`);
   }
 }
