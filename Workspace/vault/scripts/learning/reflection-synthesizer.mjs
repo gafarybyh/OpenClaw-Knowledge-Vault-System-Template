@@ -10,6 +10,7 @@
 
 import { logError, log } from '../core/logger.mjs';
 import { callAI } from '../core/ai-client.mjs';
+import { parseAIJson } from '../core/json-parser.mjs';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import path from 'path';
@@ -80,21 +81,7 @@ function extractReflectionData(filePath) {
   }
 }
 
-function cleanJsonResponse(text) {
-  if (!text) return null;
-  let cleaned = text.trim();
-  const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/i;
-  const match = cleaned.match(codeBlockRegex);
-  if (match) {
-    cleaned = match[1].trim();
-  }
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  if (start === -1 || end === -1 || end <= start) {
-    return null;
-  }
-  return cleaned.substring(start, end + 1).trim();
-}
+
 
 // ==================== CORE LOGIC ====================
 
@@ -137,13 +124,14 @@ async function synthesizeReflections() {
     ], { temperature: 0.2 });
 
     if (response) {
-      const cleaned = cleanJsonResponse(response);
-      if (cleaned) {
+      const { data, error } = parseAIJson(response, 'reflection-synthesizer.mjs');
+      if (data) {
         return {
-          synthesis: JSON.parse(cleaned),
+          synthesis: data,
           processedFiles: files
         };
       }
+      if (error) console.warn(`⚠️ Synthesizer JSON parse failed: ${error}`);
     }
   } catch (err) {
     console.error('❌ Synthesis AI failed:', err.message);
