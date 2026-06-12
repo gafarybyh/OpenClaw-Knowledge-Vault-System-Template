@@ -121,7 +121,7 @@ async function synthesizeReflections() {
         role: 'user', 
         content: `### CURRENT BEHAVIORAL RULEBOOK:\n${currentRulebook}\n\n---\n\n### REFLECTION REPORTS TO ANALYZE:\n${promptContent}` 
       }
-    ], { temperature: 0.2 });
+    ], { temperature: 0.2, timeoutMs: REQUEST_TIMEOUT_MS });
 
     if (response) {
       const { data, error } = parseAIJson(response, 'reflection-synthesizer.mjs');
