@@ -106,7 +106,8 @@ function cosineSimilarity(vecA, vecB) {
 }
 
 function escapeRegex(string) {
-  return string.replace(/[.*+?^${}()|[\]\\\-]/g, '\\$&');
+  if (typeof string !== 'string') return '';
+  return string.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
 }
 
 function sanitizeForPrompt(text) {
