@@ -90,12 +90,19 @@ function sanitizeJsonString(json) {
 
     if (inString) {
       if (ch === '\\') {
-        // Escaped character — pass through both the backslash and next char
-        result.push(ch);
-        i++;
-        if (i < json.length) {
+        // Escaped character — validate it's a legal JSON escape
+        const next = i + 1 < json.length ? json[i + 1] : null;
+        const validJsonEscapes = new Set(['"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u']);
+        if (next !== null && validJsonEscapes.has(next)) {
+          // Valid JSON escape — pass through both characters
+          result.push(ch);
+          i++;
           result.push(json[i]);
+          i++;
+          continue;
         }
+        // Invalid JSON escape (e.g. \s, \p, \d) — escape the backslash
+        result.push('\\');
         i++;
         continue;
       }
