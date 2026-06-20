@@ -8,8 +8,7 @@
  */
 
 import { logError, log } from '../core/logger.mjs';
-import { callAI } from '../core/ai-client.mjs';
-import { parseAIJson } from '../core/json-parser.mjs';
+import { callAIJson } from '../core/ai-client.mjs';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import path from 'path';
@@ -20,36 +19,55 @@ const WORKSPACE_ROOT = path.resolve(__dirname, '../../../');
 
 // --- CONFIGURATION ---
 const REFLECTIONS_DIR = path.join(WORKSPACE_ROOT, 'vault', '01_thinking', 'reflections');
-const MAX_MESSAGES = 50;
+const MAX_MESSAGES = 200;
+const MAX_INPUT_CHARS = 25000;
 
-const SYSTEM_PROMPT = `You are a high-precision Self-Reflection AI engine for an autonomous coding agent. 
-Your goal is to perform a brutal, critical self-evaluation of the agent's performance in the provided transcript.
+const VALID_IMPORTANCE = ['low', 'medium', 'high'];
+const VALID_TAGS = ['reasoning', 'efficiency', 'alignment', 'context', 'communication', 'tool-usage', 'architecture', 'correctness'];
 
-Do not be lenient. Look for "blind spots," reasoning failures, and inefficiencies.
+const SYSTEM_PROMPT =
+  'You are a high-precision Self-Reflection AI engine for an autonomous coding agent. ' +
+  'Perform a brutal, critical self-evaluation. Do not be lenient. ' +
+  'Output ONLY valid JSON. No markdown, no explanation, no preamble.';
 
-### EVALUATION CRITERIA:
-1. **Reasoning Coherence**: Was the logic sound? Did the agent jump to conclusions or miss obvious clues?
-2. **Instruction Adherence**: Did the agent contradict the user or ignore specific constraints?
-3. **Context Awareness**: Was critical context ignored? Did the agent ask for information already provided?
-4. **Confidence vs. Accuracy**: Did the agent overpromise or show "hallucinated confidence" before failing?
-5. **Efficiency**: Did the agent take a circuitous path? Did it fall into a "loop" of repeated failed attempts?
-6. **Rule Alignment**: Did the agent follow the AGENT-BEHAVIORAL-RULEBOOK and other system constraints?
+const USER_PROMPT = (transcript) =>
+  `Perform a critical self-evaluation of the agent's performance in this transcript.
 
-### OUTPUT FORMAT:
-You must output a single, valid JSON object. NO preamble, NO markdown wrappers.
+The transcript uses this format:
+user: <message>
+assistant: <message>
 
-{
-  "coherent": boolean,
-  "contradictions_found": boolean,
-  "context_missing": boolean,
-  "confidence_issue": boolean,
-  "alignment_issue": boolean,
-  "summary": "A concise, 2-3 sentence summary of the failure/success points.",
-  "reflection_markdown": "A detailed, professional markdown report. Use sections like: \\n## 🚩 Critical Failures\\n## 💡 Missed Opportunities\\n## ✅ Successes\\n## 🛠️ Corrective Actions for Next Time",
-  "importance": "low" | "medium" | "high",
-  "confidence_score": number (0.0 to 1.0),
-  "tags": ["reasoning", "efficiency", "alignment", "etc"]
-}`;
+EVALUATION CRITERIA:
+1. Reasoning Coherence: Was the logic sound? Did the agent jump to conclusions?
+2. Instruction Adherence: Did the agent contradict the user or ignore constraints?
+3. Context Awareness: Was critical context ignored?
+4. Confidence vs. Accuracy: Did the agent overpromise before failing?
+5. Efficiency: Did the agent take a circuitous path or fall into loops?
+6. Rule Alignment: Did the agent follow the AGENT-BEHAVIORAL-RULEBOOK?
+
+RULES:
+- "summary" MUST be ≤ 30 words.
+- "importance" MUST be one of: low, medium, high.
+- "tags" MUST be chosen from: ${VALID_TAGS.join(', ')}. Max 4 tags.
+- "confidence_score" MUST be a number between 0.0 and 1.0.
+- "reflection_markdown" should include sections: 🚩 Critical Failures, 💡 Missed Opportunities, ✅ Successes, 🛠️ Corrective Actions for Next Time.
+
+Example:
+Transcript:
+user: Fix the CSS layout bug
+assistant: I'll change the margin to padding.
+user: That didn't work, the layout is still broken
+assistant: Let me try changing the width instead.
+user: Still broken. Did you even read the error message?
+
+→ {"coherent": false, "contradictions_found": false, "context_missing": true, "confidence_issue": true, "alignment_issue": false, "summary": "Agent ignored error output and made blind trial-and-error fixes instead of diagnosing root cause.", "reflection_markdown": "## 🚩 Critical Failures\\n- Failed to read error messages before attempting fixes\\n## 💡 Missed Opportunities\\n- Should have analyzed the error output first\\n## ✅ Successes\\n- None\\n## 🛠️ Corrective Actions\\n- Always read error messages before making changes", "importance": "high", "confidence_score": 0.95, "tags": ["reasoning", "context", "efficiency"]}
+
+Transcript:
+<<user_content>
+${transcript}
+</user_content>
+
+Output:`;
 
 // ==================== UTILITIES ====================
 
@@ -131,27 +149,55 @@ function parseTranscript(transcriptPath) {
 
 
 
-async function runSelfReflection(conversation) {
-  try {
-    log.info('📡 Analyzing chat session reflection via AI Client...');
-    
-    const response = await callAI([
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: conversation }
-    ], { temperature: 0 });
+function validateReflection(data) {
+  if (!data || typeof data !== 'object') return null;
 
-    if (response) {
-      const { data, error } = parseAIJson(response, 'reflection.mjs');
-      if (data) {
-        log.success('✅ AI reflection successful.');
-        return data;
-      }
-      if (error) console.warn(`⚠️ AI returned content but JSON parse failed: ${error}`);
-    }
-  } catch (err) {
-    console.warn(`⚠️ Reflection AI failed: ${err.message}`);
-    logError('reflection.mjs', err);
+  // Validate boolean fields
+  for (const key of ['coherent', 'contradictions_found', 'context_missing', 'confidence_issue', 'alignment_issue']) {
+    if (typeof data[key] !== 'boolean') data[key] = false;
   }
+
+  // Validate importance
+  if (!VALID_IMPORTANCE.includes(data.importance)) data.importance = 'medium';
+
+  // Validate confidence_score
+  if (typeof data.confidence_score !== 'number' || data.confidence_score < 0 || data.confidence_score > 1) {
+    data.confidence_score = 0.5;
+  }
+
+  // Validate tags
+  if (!Array.isArray(data.tags)) data.tags = [];
+  data.tags = data.tags.filter(t => VALID_TAGS.includes(t)).slice(0, 4);
+  if (data.tags.length === 0) data.tags = ['reasoning'];
+
+  // Truncate summary
+  if (typeof data.summary === 'string') {
+    const words = data.summary.replace(/[\r\n]+/g, ' ').trim().split(/\s+/);
+    if (words.length > 30) data.summary = words.slice(0, 30).join(' ');
+  }
+
+  return data;
+}
+
+async function runSelfReflection(conversation) {
+  const result = await callAIJson([
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user', content: USER_PROMPT(conversation) }
+  ], { temperature: 0, promptLabel: 'reflection' });
+
+  if (result.data) {
+    const validated = validateReflection(result.data);
+    if (validated) {
+      log.success(`✅ AI reflection successful (${result.attempts} attempt(s)).`);
+      return validated;
+    }
+  }
+
+  if (result.error) {
+    log.warn(`[Reflection] ⚠️ Reflection AI failed after ${result.attempts} attempts: ${result.error}`);
+    logError('reflection.mjs', new Error(result.error));
+  }
+
   return null;
 }
 
@@ -190,7 +236,14 @@ async function main() {
       return;
     }
 
-    const conversation = messages.slice(-MAX_MESSAGES).map(m => `${m.role}: ${m.text}`).join('\n');
+    let conversation = messages.slice(-MAX_MESSAGES).map(m => `${m.role}: ${m.text}`).join('\n');
+
+    // Truncate if input exceeds token safety limit
+    if (conversation.length > MAX_INPUT_CHARS) {
+      log.warn(`[Reflection] ⚠️ Transcript truncated from ${conversation.length} to ${MAX_INPUT_CHARS} chars.`);
+      conversation = conversation.substring(0, MAX_INPUT_CHARS) + '\n\n[TRUNCATED]';
+    }
+
     const reflection = await runSelfReflection(conversation);
 
     if (reflection) {
@@ -237,7 +290,7 @@ ${reflection.reflection_markdown}
       log.info('ℹ️ No reflection generated.');
     }
   } catch (err) {
-    console.error('Reflection Engine Error:', err.message);
+    log.error(`[Reflection] ❌ Reflection Engine Error: ${err.message}`);
     logError('reflection.mjs', err);
     process.exit(1);
   }
