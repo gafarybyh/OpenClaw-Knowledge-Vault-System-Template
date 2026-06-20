@@ -14,13 +14,11 @@
  */
 
 import { logError } from '../core/logger.mjs';
-import { callAI, getEmbedding as coreGetEmbedding, AI_CONFIG, sleep } from '../core/ai-client.mjs';
-import { parseAIJson } from '../core/json-parser.mjs';
+import { callAIJson, getEmbedding as coreGetEmbedding, AI_CONFIG, sleep } from '../core/ai-client.mjs';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { globSync } from 'glob';
-import { execSync } from 'child_process';
 import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -32,7 +30,6 @@ const VAULT_PATH = path.join(WORKSPACE_ROOT, 'vault');
 const STATE_PATH = path.join(VAULT_PATH, '.system/state/.vault_state.json');
 const SIMILARITY_THRESHOLD = parseFloat(process.env.SIMILARITY_THRESHOLD) || 0.72;
 const MAX_CANDIDATES_PER_FILE = parseInt(process.env.MAX_CANDIDATES_PER_FILE) || 5;
-const EMBEDDING_BATCH_SIZE = parseInt(process.env.EMBEDDING_BATCH_SIZE) || 5;
 const MAX_RETRIES = parseInt(process.env.MAX_RETRIES) || 3;
 const PRE_FILTER_MIN_SHARED = parseInt(process.env.PRE_FILTER_MIN_SHARED) || 1;
 const EXCLUDED_FOLDERS = ['behavioral_rules', 'reflections'];
@@ -192,22 +189,18 @@ async function withRetry(fn, maxRetries = MAX_RETRIES, baseDelay = 1000) {
   }
 }
 
-async function processBatch(items, batchSize, processor) {
+async function processSequential(items, processor) {
   const results = [];
-  for (let i = 0; i < items.length; i += batchSize) {
-    const batch = items.slice(i, i + batchSize);
-
-    // Process batch items sequentially to avoid 429 (Too Many Requests)
-    for (const item of batch) {
-      try {
-        const res = await processor(item);
-        results.push(res);
-        // Throttling: give the API a small breather between requests
-        await sleep(AI_CONFIG.requestDelay);
-      } catch (err) {
-        logMetric('batch_item_error', { item: item.name || item, error: err.message });
-        results.push(null);
-      }
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    try {
+      const res = await processor(item);
+      results.push(res);
+      // Throttling: give the API a small breather between requests
+      await sleep(AI_CONFIG.requestDelay);
+    } catch (err) {
+      logMetric('batch_item_error', { item: item.name || item, error: err.message });
+      results.push(null);
     }
   }
   return results;
@@ -306,46 +299,61 @@ function inferRelationType(nameA, nameB) {
   return null;
 }
 
+const REASON_MAX_WORDS = 15;
+
+function truncateReason(reason) {
+  if (!reason || typeof reason !== 'string') return '';
+  const words = reason.replace(/[\r\n]+/g, ' ').trim().split(/\s+/);
+  if (words.length <= REASON_MAX_WORDS) return words.join(' ');
+  return words.slice(0, REASON_MAX_WORDS).join(' ');
+}
+
 // ==================== AI VALIDATOR ====================
+const VALIDATION_SYSTEM_PROMPT =
+  'You are a knowledge graph analyst. You determine semantic relationships between notes. ' +
+  'Output ONLY valid JSON. No markdown, no explanation, no preamble.';
+
+const VALIDATION_USER_PROMPT = (fileA, safeA, fileB, safeB, typeHint) =>
+  `Analyze whether Note A and Note B have a STRONG semantic relationship.
+
+Note A (${fileA}):
+<<user_content>
+${safeA}
+</user_content>
+
+Note B (${fileB}):
+<<user_content>
+${safeB}
+</user_content>
+
+${typeHint ? typeHint + '\n\n' : ''}RULES:
+- Only return "related": true if the connection is EXPLICIT, MEANINGFUL, and DURABLE.
+- If vague, trivial, or coincidental → {"related": false}
+- "reason" MUST be ≤ ${REASON_MAX_WORDS} words. Describe the specific connection, not a general summary.
+
+Relation types: supports, contradicts, causes, related_to, extends, depends_on, derived_from, analogous_to, implementation_of, optimization_for, same_topic, learned_from, corrects, invalidates
+
+Examples:
+→ {"related": true, "relation_type": "supports", "reason": "React hooks optimize rendering performance in component patterns"}
+→ {"related": false}
+
+Output:`;
+
 async function validateRelation(fileA, contentA, fileB, contentB) {
   const safeA = sanitizeForPrompt(contentA);
   const safeB = sanitizeForPrompt(contentB);
   const inferredType = inferRelationType(fileA, fileB);
   const typeHint = inferredType ? `Likely relation: ${inferredType}` : '';
 
-  const prompt = `You are a knowledge graph expert. Analyze two notes and determine if there is a STRONG semantic relationship.
-  
-  Note A (${fileA}):
-  <<user_content>
-  ${safeA}
-  </user_content>
-  
-  Note B (${fileB}):
-  <<user_content>
-  ${safeB}
-  </user_content>
-  
-  ${typeHint}
-  
-  CRITICAL: Only return "related": true if the connection is explicit, meaningful, and durable. If the relationship is vague, trivial, or purely coincidental, return {"related": false}.
-  
-  Relation types: supports, contradicts, causes, related_to, extends, depends_on, derived_from, analogous_to, implementation_of, optimization_for, same_topic, learned_from, corrects, invalidates
-  
-  Output ONLY JSON: {"related": true, "relation_type": "...", "reason": "..."} or {"related": false}`;
+  const { data, error } = await callAIJson([
+    { role: 'system', content: VALIDATION_SYSTEM_PROMPT },
+    { role: 'user', content: VALIDATION_USER_PROMPT(fileA, safeA, fileB, safeB, typeHint) }
+  ], { temperature: 0, promptLabel: 'linker.mjs' });
 
-  try {
-    const content = await callAI([
-      { role: 'system', content: 'You are a semantic analysis assistant. Output JSON only.' },
-      { role: 'user', content: prompt }
-    ], { temperature: 0 });
+  if (data) return data;
 
-    if (content && typeof content === 'string') {
-      const { data, error } = parseAIJson(content, 'linker.mjs');
-      if (data) return data;
-      if (error) logError('linker.mjs', `Relation validation JSON parse failed: ${error}`);
-    }
-  } catch (err) {
-    logError('linker.mjs', `Relation validation failed: ${err.message}`);
+  if (error) {
+    logError('linker.mjs', `Relation validation failed: ${error}`);
   }
 
   return { related: false };
@@ -380,12 +388,9 @@ async function getValidatedRelation(a, contentA, b, contentB, validationCache) {
 }
 
 // ==================== LINK OPERATIONS ====================
-function parseExistingLinks(filePath) {
-  let content;
-  try {
-    content = fs.readFileSync(filePath, 'utf8');
-  } catch (e) {
-    logMetric('parse_existing_links_error', { file: filePath, error: e.message });
+function parseExistingLinks(content, filePath) {
+  if (!content) {
+    logMetric('parse_existing_links_error', { file: filePath, error: 'No content provided' });
     return [];
   }
   const links = [];
@@ -428,17 +433,13 @@ function parseExistingLinks(filePath) {
   return links;
 }
 
-function hasExactLink(content, target, type) {
-  const p = '^-\\s*' + escapeRegex(type) + '::\\s*\\[\\[' + escapeRegex(target) + '(\\|.*?)?\\]\\]';
-  return new RegExp(p, 'm').test(content);
-}
-
 function hasAnyLinkToTarget(content, target) {
   const p = '^-\\s*\\w+::\\s*\\[\\[' + escapeRegex(target) + '(\\|.*?)?\\]\\]';
   return new RegExp(p, 'm').test(content);
 }
 
 async function addSemanticLink(filePath, target, type, reason) {
+  reason = truncateReason(reason);
   const res = await writeQueue.enqueue(filePath, (c) => {
     const exactRegex = new RegExp(`^-\\s*${escapeRegex(type)}::\\s*\\[\\[${escapeRegex(target)}`, 'm');
     if (exactRegex.test(c)) {
@@ -611,7 +612,9 @@ async function main() {
   const cache = loadCache();
   const validationCache = loadValidationCache();
   const fileMeta = {};
+  const semanticHashCache = {};
   const dirtyFiles = new Set();
+  const newFiles = new Set();
   let cacheUpdated = false;
 
   console.error(`📁 Processing ${files.length} files | Cache: ${Object.keys(cache).filter(k => !k.startsWith('__')).length} entries`);
@@ -640,6 +643,15 @@ async function main() {
     fileMeta[t.name] = { folder: t.folder, type, keywords, linkCount };
   });
 
+  // BUG1 FIX: Load all scopeFiles into contents map so pruning can access
+  // content of files not in the current processing batch (e.g., incremental mode)
+  for (const f of scopeFiles) {
+    const n = path.basename(f, '.md');
+    if (!contents[n]) {
+      try { contents[n] = fs.readFileSync(f, 'utf8'); } catch {}
+    }
+  }
+
   // === EMBEDDING CLASSIFICATION ===
   let skipped = 0, need = 0, linkOnlyChange = 0;
   const needsEmbedding = [];
@@ -647,6 +659,7 @@ async function main() {
   for (const t of tasks) {
     const fullHash = hashContent(t.text);
     const semanticHash = hashSemanticContent(t.text);
+    semanticHashCache[t.name] = semanticHash;
     const c = cache[t.name];
 
     // CASE A: Cache valid, semantic hash sama → embedding reusable
@@ -674,6 +687,8 @@ async function main() {
     // CASE C: Butuh embed baru (file baru atau konten berubah)
     needsEmbedding.push(t);
     need++;
+    // Track truly new files (no prior cache = new from distiller)
+    if (!cache[t.name]) newFiles.add(t.name);
   }
 
   console.error(`⏭️  Cached: ${skipped} | Link-only: ${linkOnlyChange} | Need embed: ${need}`);
@@ -682,7 +697,7 @@ async function main() {
   const tEmbed = Date.now();
   if (needsEmbedding.length > 0) {
     console.error(`\n⚡ Embedding ${needsEmbedding.length} files...`);
-    await processBatch(needsEmbedding, EMBEDDING_BATCH_SIZE, async (item) => {
+    await processSequential(needsEmbedding, async (item) => {
       try {
         console.error(`\n🔹 ${item.name}`);
         const readableName = item.name.replace(/\.md$/, '').replace(/-/g, ' ').replace(/_/g, ' ');
@@ -757,7 +772,7 @@ async function main() {
 
   for (const t of tasks) {
     const c = cache[t.name];
-    const semanticHash = hashSemanticContent(t.text);
+    const semanticHash = semanticHashCache[t.name] || hashSemanticContent(t.text);
     if (!c || c.semanticHash !== semanticHash) {
       semanticDirtyFiles.add(t.name);
     }
@@ -769,7 +784,7 @@ async function main() {
 
   for (const file of files) {
     const a = path.basename(file, '.md');
-    const existingLinks = parseExistingLinks(file);
+    const existingLinks = parseExistingLinks(contents[a], file);
 
     // PHASE 1: Structural Pruning (target missing) — ALWAYS run
     for (const link of existingLinks) {
@@ -829,19 +844,21 @@ async function main() {
   const tDisc = Date.now();
   let pairsChecked = 0, preFiltered = 0, cosineChecked = 0;
 
-  if (dirtyFiles.size === 0 && !IS_DEEP_VERIFY) {
-    console.error(`\n⏭️  No dirty files. Skipping discovery.`);
+  if (dirtyFiles.size === 0 && !IS_DEEP_VERIFY && newFiles.size === 0) {
+    console.error(`\n⏭️  No dirty/new files. Skipping discovery.`);
   } else {
     console.error(`\n🔍 Discovery (pre-filter + cosine)...`);
+    if (newFiles.size > 0) console.error(`   📌 New files (no pre-filter): ${[...newFiles].join(', ')}`);
     const names = Object.keys(embeddings);
 
     const sourceNames = (isIncremental && !IS_DEEP_VERIFY)
-      ? names.filter(n => dirtyFiles.has(n) || semanticDirtyFiles.has(n))
+      ? names.filter(n => dirtyFiles.has(n) || semanticDirtyFiles.has(n) || newFiles.has(n))
       : names;
 
     console.error(`   Source files for discovery: ${sourceNames.length}`);
 
-    await processBatch(sourceNames, 5, async (a) => {
+    await processSequential(sourceNames, async (a) => {
+      const isAnew = newFiles.has(a);
       const dirtyA = semanticDirtyFiles.has(a) || IS_DEEP_VERIFY;
       const vecA = embeddings[a];
       const cands = [];
@@ -854,15 +871,19 @@ async function main() {
         if (a === b) continue;
         if (isFull && j <= aIdx) continue;
 
-        if (!dirtyA && !semanticDirtyFiles.has(b) && !IS_DEEP_VERIFY) continue;
+        if (!dirtyA && !semanticDirtyFiles.has(b) && !IS_DEEP_VERIFY && !isAnew && !newFiles.has(b)) continue;
 
         if (hasAnyLinkToTarget(contents[a], b) && hasAnyLinkToTarget(contents[b], a)) continue;
 
         preFiltered++;
         const metaA = fileMeta[a];
         const metaB = fileMeta[b];
-        if (!shouldCompare(a, b, metaA.keywords, metaB.keywords, metaA.folder, metaB.folder, metaA.type, metaB.type)) {
-          continue;
+
+        // New files bypass shouldCompare — check ALL candidates via cosine
+        if (!isAnew && !newFiles.has(b)) {
+          if (!shouldCompare(a, b, metaA.keywords, metaB.keywords, metaA.folder, metaB.folder, metaA.type, metaB.type)) {
+            continue;
+          }
         }
 
         const sim = cosineSimilarity(vecA, embeddings[b]);
@@ -874,13 +895,14 @@ async function main() {
       const top = cands.slice(0, MAX_CANDIDATES_PER_FILE);
       pairsChecked += top.length;
 
-      await Promise.all(top.map(async (cand) => {
+      for (const cand of top) {
         const b = cand.name;
         const pa = nameToPath[a];
         const pb = nameToPath[b];
         if (!pa || !pb) return;
 
-        console.error(`🔎 ${a} <-> ${b} (sim: ${cand.score.toFixed(3)})`);
+        const isNewPair = isAnew || newFiles.has(b);
+        console.error(`🔎 ${a} <-> ${b} (sim: ${cand.score.toFixed(3)})${isNewPair ? ' [NEW]' : ''}`);
         try {
           const r = await getValidatedRelation(a, contents[a], b, contents[b], validationCache);
           if (r.related) {
@@ -897,15 +919,15 @@ async function main() {
           logMetric('validation_error', { source: a, target: b, error: e.message });
           console.error(`❌ ${a} <-> ${b}: ${e.message}`);
         }
-      }));
+      }
     });
-    console.error(`📊 Pre-filtered: ${preFiltered} | Cosine: ${cosineChecked} | AI validated: ${pairsChecked}`);
+    console.error(`📊 Pre-filtered: ${preFiltered} | Cosine: ${cosineChecked} | AI validated: ${pairsChecked} | New: ${newFiles.size}`);
   }
   console.error(`⏱️  Discovery phase: ${((Date.now() - tDisc) / 1000).toFixed(1)}s`);
 
   // ==================== SUMMARY & SYNC ====================
   const totalTime = ((Date.now() - t0) / 1000).toFixed(1);
-  console.error(`\n✨ Done in ${totalTime}s. Added: ${added} | Updated: ${updated} | Pruned: ${pruned}`);
+  console.error(`\n✨ Done in ${totalTime}s. Added: ${added} | Updated: ${updated} | Pruned: ${pruned} | New files: ${newFiles.size}`);
   logMetric('workflow_complete', { added, updated, pruned, total_seconds: parseFloat(totalTime) });
 
   // Update state
