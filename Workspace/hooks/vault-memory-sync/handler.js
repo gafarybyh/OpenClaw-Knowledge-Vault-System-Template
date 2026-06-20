@@ -9,8 +9,9 @@ const execAsync = promisify(exec);
 const CONFIG = {
   LOCK_STALE_MS: 60 * 60 * 1000,        // 1 hour
   TASK_TIMEOUT_MS: 10 * 60 * 1000,      // 10 minutes
+  PIPELINE_TIMEOUT_MS: 30 * 60 * 1000,  // 30 minutes (overall cap)
   MAX_BUFFER: 50 * 1024 * 1024,         // 50MB
-  RETRY_ATTEMPTS: 1,
+  RETRY_ATTEMPTS: 2,                     // 1 = no retry; 2 = one retry
   RETRY_DELAY_MS: 1000,
 };
 
@@ -60,30 +61,32 @@ class LockManager {
   }
 
   isLocked() {
-    if (!fs.existsSync(this.lockFile)) return false;
+    if (!fs.existsSync(this.lockFile)) return null;
 
     const lock = safeReadJson(this.lockFile);
     if (!lock || !lock.startedAt) {
       this.removeLock();
-      return false;
+      return null;
     }
 
     const age = Date.now() - new Date(lock.startedAt).getTime();
 
     // Check if process is still alive
     if (lock.pid && isProcessAlive(lock.pid)) {
-      return true;
+      return lock;
     }
 
     // Stale lock detection
     if (age > CONFIG.LOCK_STALE_MS) {
-      console.warn('[memory-sync] Removing stale lock (age: ' + (age / 1000 / 60).toFixed(1) + ' min)');
+      console.warn(`[memory-sync] Removing stale lock (age: ${(age / 60000).toFixed(1)} min)`);
       this.removeLock();
-      return false;
+      return null;
     }
 
-    // Process dead but lock not stale yet — wait a bit
-    return true;
+    // Process dead but lock not stale yet — treat as stale to unblock
+    console.warn('[memory-sync] Lock held by dead process, reclaiming');
+    this.removeLock();
+    return null;
   }
 
   createLock() {
@@ -171,16 +174,16 @@ class TaskRunner {
     }
 
     // Validate script exists before running
-    const scriptMatch = task.cmd.match(/node\s+"([^"]+)"/);
-    if (scriptMatch) {
-      validateScript(scriptMatch[1]);
+    const scriptPath = extractScriptPath(task.cmd);
+    if (scriptPath) {
+      validateScript(scriptPath);
     }
 
     this.statusManager.write('running', {
       currentTask: task.name,
       currentStep: index,
       totalSteps: total,
-      progress: Number((((index - 1) / total) * 100).toFixed(1)),
+      progress: Number(((index / total) * 100).toFixed(1)),
     });
 
     const started = Date.now();
@@ -219,6 +222,14 @@ function ensureDir(dir) {
   }
 }
 
+// ─── Extract script path from command ──────────────────────────────
+function extractScriptPath(cmd) {
+  if (!cmd) return null;
+  // Match: node "path", node 'path', or node path (until whitespace)
+  const match = cmd.match(/^node\s+["']([^"']+)"|^node\s+(\S+)/);
+  return match?.[1] || match?.[2] || null;
+}
+
 // ─── Main Handler ───────────────────────────────────────────────────
 const handler = async (event) => {
   // Validate event structure
@@ -249,30 +260,39 @@ const handler = async (event) => {
   const logger = new Logger(LOG_FILE);
   const statusManager = new StatusManager(STATUS_FILE);
 
-  // ─── Signal Handlers for Cleanup ─────────────────────────────────
-  const cleanup = () => {
-    console.log('\n[memory-sync] Received termination signal, cleaning up...');
+  // ─── Signal Handlers for Cleanup (once-only to prevent stacking) ──
+  const onSignal = (sig) => {
+    console.log(`\n[memory-sync] Received ${sig}, cleaning up...`);
     lockManager.removeLock();
-    statusManager.write('interrupted', { reason: 'signal' });
+    statusManager.write('interrupted', { reason: sig });
     process.exit(1);
   };
 
-  process.on('SIGINT', cleanup);
-  process.on('SIGTERM', cleanup);
-  process.on('uncaughtException', (err) => {
+  const onUncaught = (err) => {
     console.error('[memory-sync] Uncaught Exception:', err);
     logger.error('UncaughtException', err);
     lockManager.removeLock();
     process.exit(1);
-  });
-  process.on('unhandledRejection', (reason) => {
+  };
+
+  const onRejection = (reason) => {
     console.error('[memory-sync] Unhandled Rejection:', reason);
     logger.error('UnhandledRejection', new Error(String(reason)));
-  });
+  };
+
+  // Remove any previous listeners to prevent stacking
+  process.removeAllListeners('SIGINT');
+  process.removeAllListeners('SIGTERM');
+  process.removeAllListeners('uncaughtException');
+  process.removeAllListeners('unhandledRejection');
+  process.on('SIGINT', () => onSignal('SIGINT'));
+  process.on('SIGTERM', () => onSignal('SIGTERM'));
+  process.on('uncaughtException', onUncaught);
+  process.on('unhandledRejection', onRejection);
 
   // ─── Check Lock ──────────────────────────────────────────────────
-  if (lockManager.isLocked()) {
-    const lockInfo = safeReadJson(LOCK_FILE, {});
+  const lockInfo = lockManager.isLocked();
+  if (lockInfo) {
     const msg = `⚠️ Memory sync already running (PID: ${lockInfo.pid || 'unknown'}).`;
     console.log(`[memory-sync] ${msg}`);
     event.messages.push(msg);
@@ -333,12 +353,12 @@ const handler = async (event) => {
     {
       name: 'Memory Sync',
       cmd: `node "${scriptsDir}/maintenance/update-memory.mjs"`,
-      critical: true, // This one is critical
+      critical: true,
     },
     {
       name: 'Graph View',
       cmd: `node "${scriptsDir}/maintenance/generate-graph-html.mjs"`,
-      critical: false, // This one is critical
+      critical: false,
     },
   ];
 
@@ -359,7 +379,14 @@ const handler = async (event) => {
   console.log(`[memory-sync] Tasks: ${tasks.filter(t => t.cmd).length} active / ${tasks.length} total`);
   console.log(`${'═'.repeat(40)}\n`);
 
-  // Execute pipeline in background
+  // Execute pipeline in background (with overall timeout guard)
+  const pipelineTimer = setTimeout(() => {
+    console.error(`[memory-sync] Pipeline timeout (${CONFIG.PIPELINE_TIMEOUT_MS / 60000} min), force-releasing lock`);
+    lockManager.removeLock();
+    statusManager.write('failed', { error: 'Pipeline timeout' });
+  }, CONFIG.PIPELINE_TIMEOUT_MS);
+  pipelineTimer.unref(); // Don't keep process alive for timer alone
+
   (async () => {
     try {
       for (let i = 0; i < tasks.length; i++) {
@@ -392,6 +419,7 @@ const handler = async (event) => {
         totalTasks: tasks.length,
       });
 
+      clearTimeout(pipelineTimer);
       lockManager.removeLock();
 
       console.log(`\n${'═'.repeat(40)}`);
@@ -410,6 +438,7 @@ const handler = async (event) => {
         durationSeconds: totalTime,
         failedTasks: runner.failedTasks,
       });
+      clearTimeout(pipelineTimer);
       lockManager.removeLock();
 
       console.error(`\n${'═'.repeat(40)}`);
@@ -419,7 +448,7 @@ const handler = async (event) => {
     }
   })();
 
-  event.messages.push('✅ New session started. Vault memory sync is running in the background...');
+  event.messages.push('✅ New session started. Memory sync is running in the background...');
 };
 
 module.exports = handler;
