@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { logError, log } from '../core/logger.mjs';
-import { callAI } from '../core/ai-client.mjs';
+import { callAI, sleep } from '../core/ai-client.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -10,16 +10,25 @@ const WORKSPACE_ROOT = path.resolve(__dirname, '../../../');
 
 // --- CONFIGURATION ---
 
-const REQUEST_TIMEOUT_MS = 30000;
 const LEARNINGS_DIR = path.join(WORKSPACE_ROOT, 'vault', '.system', 'temp_learnings');
 const RULEBOOK_PATH = path.join(WORKSPACE_ROOT, 'vault/01_thinking/AGENT-BEHAVIORAL-RULEBOOK.md');
+const AI_MAX_RETRIES = 3;
+const AI_RETRY_DELAY_MS = 3000;
+const MAX_INPUT_CHARS = 25000;
+const MAX_BACKUPS = 3;
 
-const SYSTEM_PROMPT = `You are the Lead Behavioral Architect for an autonomous agent. Your mission is to evolve the agent's "Behavioral Rulebook" by synthesizing new learnings into a permanent, high-signal set of operating principles.
+const SYSTEM_PROMPT =
+  'You are the Lead Behavioral Architect for an autonomous agent. ' +
+  'Evolve the agent\'s Behavioral Rulebook by synthesizing new learnings into permanent operating principles. ' +
+  'Output ONLY the finalized markdown text. No code blocks, no preamble, no explanations.';
+
+const USER_PROMPT = (currentRulebook, newLearnings) =>
+  `Merge the NEW LEARNINGS into the CURRENT RULEBOOK following these rules:
 
 CORE OBJECTIVES:
 1. CONSOLIDATION: Merge NEW learnings into the CURRENT Rulebook.
 2. DEDUPLICATION: If a new learning reinforces an existing rule, merge them into a single, stronger statement.
-3. CONFLICT RESOLUTION: If a new learning contradicts an existing rule, the NEW learning takes precedence (it represents the most recent user preference).
+3. CONFLICT RESOLUTION: If a new learning contradicts an existing rule, the NEW learning takes precedence (most recent user preference).
 4. ABSTRACTION: Convert raw observations into permanent principles.
    - Bad: "User told me on May 30 to stop using formal greetings."
    - Good: "- Avoid formal greetings; maintain a direct, technical tone."
@@ -30,28 +39,88 @@ STRUCTURAL REQUIREMENTS:
 - Use concise bullet points. No fluff, no preamble, no explanations.
 - Output ONLY the finalized markdown text. No \`\`\`markdown wrappers.
 
+Example:
+Current Rulebook:
+# AGENT-BEHAVIORAL-RULEBOOK
+
+> ⚠️ CRITICAL: This file is PERMANENT.
+
+---
+
+## Behavioral Rules
+
+### Communication
+- Use a direct, technical tone.
+
+New Learnings:
+### Corrections
+- [2024-01-15] [Session: session.md] [Tone/Style/Format] Stop using markdown tables, use lists instead.
+
+Output:
+# AGENT-BEHAVIORAL-RULEBOOK
+
+> ⚠️ CRITICAL: This file is PERMANENT.
+
+---
+
+## Behavioral Rules
+
+### Communication
+- Use a direct, technical tone.
+- Prefer lists over markdown tables for data presentation.
+
+---
+
 CURRENT RULEBOOK:
-{CURRENT_RULEBOOK}
+<<user_content>
+${currentRulebook}
+</user_content>
 
 NEW LEARNINGS TO CONSOLIDATE (Categorized):
-{NEW_LEARNINGS}`;
+<<user_content>
+${newLearnings}
+</user_content>
+
+Output:`;
 
 async function consolidateWithAI(currentRulebook, newLearnings) {
-  try {
-    const prompt = SYSTEM_PROMPT.replace('{CURRENT_RULEBOOK}', currentRulebook).replace('{NEW_LEARNINGS}', newLearnings);
-    const content = await callAI([
-      { role: 'user', content: prompt },
-    ], { temperature: 0.1, timeoutMs: REQUEST_TIMEOUT_MS });
+  for (let attempt = 1; attempt <= AI_MAX_RETRIES; attempt++) {
+    try {
+      const content = await callAI([
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: USER_PROMPT(currentRulebook, newLearnings) },
+      ], { temperature: 0.1 });
 
-    if (typeof content === 'string') {
-      return content.replace(/^```markdown\n?/, '').replace(/\n?```$/, '').trim();
+      if (typeof content === 'string') {
+        const cleaned = content.replace(/^```markdown\n?/, '').replace(/\n?```$/, '').trim();
+        if (cleaned) return cleaned;
+      }
+    } catch (err) {
+      log.error(`[Synthesizer] ⚠️ AI consolidation failed (attempt ${attempt}/${AI_MAX_RETRIES}): ${err.message}`);
+      if (attempt < AI_MAX_RETRIES) {
+        await sleep(AI_RETRY_DELAY_MS * attempt);
+        continue;
+      }
+      logError('learning-synthesizer.mjs', err);
     }
-  } catch (err) {
-    log.error(`[Synthesizer] ⚠️ AI consolidation failed: ${err.message}`);
-    logError('learnings-synthesizer.mjs', err);
   }
 
   return null;
+}
+
+function rotateBackup() {
+  // Remove oldest backup if we exceed MAX_BACKUPS
+  for (let i = MAX_BACKUPS; i < 99; i++) {
+    const oldBackup = `${RULEBOOK_PATH}.bak${i > 1 ? i : ''}`;
+    const prevBackup = i === 1 ? `${RULEBOOK_PATH}.bak` : `${RULEBOOK_PATH}.bak${i}`;
+    if (fs.existsSync(oldBackup)) {
+      fs.unlinkSync(oldBackup);
+    }
+    if (fs.existsSync(prevBackup)) {
+      const next = i === 1 ? `${RULEBOOK_PATH}.bak2` : `${RULEBOOK_PATH}.bak${i + 1}`;
+      fs.renameSync(prevBackup, next);
+    }
+  }
 }
 
 async function synthesize() {
@@ -76,21 +145,32 @@ async function synthesize() {
 
     if (!newLearnings.trim()) return;
 
+    // Truncate if input exceeds token safety limit (~25K chars ≈ ~6K tokens)
+    if (newLearnings.length > MAX_INPUT_CHARS) {
+      log.warn(`[Synthesizer] ⚠️ Learnings truncated from ${newLearnings.length} to ${MAX_INPUT_CHARS} chars to prevent token overflow.`);
+      newLearnings = newLearnings.substring(0, MAX_INPUT_CHARS) + '\n\n[TRUNCATED]';
+    }
+
     let currentRulebook = "";
     if (fs.existsSync(RULEBOOK_PATH)) {
       currentRulebook = fs.readFileSync(RULEBOOK_PATH, 'utf8');
+      // Also cap rulebook size
+      if (currentRulebook.length > MAX_INPUT_CHARS) {
+        log.warn(`[Synthesizer] ⚠️ Current rulebook truncated to ${MAX_INPUT_CHARS} chars.`);
+        currentRulebook = currentRulebook.substring(0, MAX_INPUT_CHARS) + '\n\n[TRUNCATED]';
+      }
     } else {
-      currentRulebook = `# AGENT-BEHAVIORAL-RULEBOOK\n\n> ⚠️ CRITICAL: This file is PERMANENT. Do NOT move to archive or published.\n> Purpose: The single source of truth for Raynor's learned behavioral rules.\n\n---`;
+      currentRulebook = `# AGENT-BEHAVIORAL-RULEBOOK\n\n> ⚠️ CRITICAL: This file is PERMANENT. Do NOT move to archive or published.\n> Purpose: The single source of truth for learned behavioral rules.\n\n---`;
     }
 
     log.info('[Synthesizer] 🧠 AI Consolidation started...');
     const updatedRulebook = await consolidateWithAI(currentRulebook, newLearnings);
 
     if (updatedRulebook && updatedRulebook.includes('# AGENT-BEHAVIORAL-RULEBOOK')) {
-      // 1. Backup current rulebook
-      const backupPath = `${RULEBOOK_PATH}.bak`;
+      // 1. Backup with rotation
       if (fs.existsSync(RULEBOOK_PATH)) {
-        fs.copyFileSync(RULEBOOK_PATH, backupPath);
+        rotateBackup();
+        fs.copyFileSync(RULEBOOK_PATH, `${RULEBOOK_PATH}.bak`);
       }
 
       // 2. Atomic Write: Write to temp file then rename
@@ -109,11 +189,11 @@ async function synthesize() {
       }
     } else {
       log.error('[Synthesizer] ❌ AI Consolidation failed or returned invalid format. Raw learnings kept for next try.');
-      logError('learnings-synthesizer.mjs', new Error('AI Consolidation failed or returned invalid format'));
+      logError('learning-synthesizer.mjs', new Error('AI Consolidation failed or returned invalid format'));
     }
   } catch (err) {
     log.error(`[Synthesizer] ❌ Critical Error: ${err.message}`);
-    logError('learnings-synthesizer.mjs', err);
+    logError('learning-synthesizer.mjs', err);
     process.exit(1);
   }
 }
@@ -187,7 +267,7 @@ function updateBehavioralRuleNodes() {
               });
             }
           } catch (e) {
-            console.error(`Failed to parse rule file: ${fileName}`, e.message);
+            log.error(`[Synthesizer] Failed to parse rule file: ${fileName} — ${e.message}`);
             logError('learning-synthesizer.mjs', e);
           }
         }
@@ -217,22 +297,28 @@ ${ruleText}
       }
     }
 
-    // Garbage Collection: Hapus aturan usang
+    // Garbage Collection: Remove obsolete rule files
+    // Safety: Only delete if we have generated at least 1 rule (prevents mass deletion on parse failure)
     if (generatedFiles.size > 0) {
       const existingFiles = fs.readdirSync(rulesDir).filter(f => f.endsWith('.md'));
-      let deletedCount = 0;
-      for (const f of existingFiles) {
-        if (!generatedFiles.has(f)) {
+      const deleteCandidates = existingFiles.filter(f => !generatedFiles.has(f));
+
+      // Safety threshold: never delete more than 80% of existing rules in one run
+      if (deleteCandidates.length > 0 && deleteCandidates.length < existingFiles.length * 0.8) {
+        let deletedCount = 0;
+        for (const f of deleteCandidates) {
           try {
             fs.unlinkSync(path.join(rulesDir, f));
             deletedCount++;
           } catch (e) {
-            log.error(`Failed to delete obsolete rule ${f}: ${e.message}`);
+            log.error(`[Synthesizer] Failed to delete obsolete rule ${f}: ${e.message}`);
           }
         }
-      }
-      if (deletedCount > 0) {
-        log.info(`🗑️ Garbage collected ${deletedCount} obsolete behavioral rules.`);
+        if (deletedCount > 0) {
+          log.info(`🗑️ Garbage collected ${deletedCount} obsolete behavioral rules.`);
+        }
+      } else if (deleteCandidates.length >= existingFiles.length * 0.8) {
+        log.warn(`[Synthesizer] ⚠️ GC skipped: would delete ${deleteCandidates.length}/${existingFiles.length} rules (>80% threshold). Possible parse failure.`);
       }
     }
   } catch (err) {
