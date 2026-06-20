@@ -13,8 +13,8 @@ const GENERIC_KEYWORDS = ['raw', 'data', 'test', 'catatan', 'note', 'temp', 'dum
 function processInbox() {
     try {
         if (!fs.existsSync(INBOX_PATH)) {
-            log.error(`Error: ${INBOX_PATH} tidak ditemukan.`);
-            process.exit(0);
+            log.warn(`[ProcessInbox] Inbox directory not found: ${INBOX_PATH}`);
+            return;
         }
 
         if (!fs.existsSync(KNOWLEDGE_PATH)) {
@@ -24,14 +24,18 @@ function processInbox() {
         const files = fs.readdirSync(INBOX_PATH);
 
         if (files.length === 0) {
-            log.info("Inbox kosong. Tidak ada yang perlu diproses.");
-            process.exit(0);
+            log.info('[ProcessInbox] Inbox is empty. Nothing to process.');
+            return;
         }
 
-        files.forEach(file => {
+        let movedCount = 0;
+        let skippedCount = 0;
+
+        for (const file of files) {
             // Abaikan folder archive dan file yang sudah diproses
             if (file === 'archive' || file.startsWith('[PROCESSED]_')) {
-                return;
+                skippedCount++;
+                continue;
             }
 
             const oldPath = path.join(INBOX_PATH, file);
@@ -42,12 +46,12 @@ function processInbox() {
             let destinationPath = KNOWLEDGE_PATH;
             if (baseName.startsWith('ref-')) {
                 destinationPath = REFERENCE_PATH;
-                log.info(`Reference detected: "${file}" will be moved to reference vault.`);
+                log.info(`[ProcessInbox] Reference detected: "${file}" → reference vault.`);
             } else {
                 // LOGIKA DETEKSI KLAIM (Hanya untuk file non-referensi)
                 
                 // 1. Cek apakah mengandung kata kunci generik
-                const hasGenericKeyword = GENERIC_KEYWORDS.some(keyword => baseName.includes(keyword));
+                const hasGenericKeyword = GENERIC_KEYWORDS.some(kw => baseName.includes(kw));
                 
                 // 2. Cek apakah terlalu pendek (Klaim biasanya adalah kalimat/pernyataan)
                 const isTooShort = baseName.length < 12;
@@ -58,9 +62,9 @@ function processInbox() {
                 // Jika memenuhi salah satu kriteria di atas, maka dianggap BUKAN klaim
                 if (hasGenericKeyword || isTooShort || lacksSeparators) {
                     fileName = `[NEEDS_CLAIM]_${file}`;
-                    log.info(`Warning: "${file}" terdeteksi generik. Menambahkan tag [NEEDS_CLAIM].`);
+                    log.warn(`[ProcessInbox] "${file}" is generic. Adding [NEEDS_CLAIM] tag.`);
                 } else {
-                    log.info(`Valid Claim: "${file}" memenuhi standar penamaan.`);
+                    log.info(`[ProcessInbox] Valid claim: "${file}"`);
                 }
             }
 
@@ -76,15 +80,18 @@ function processInbox() {
                 
                 // Memindahkan file langsung ke tujuan agar tidak terjadi duplikasi indeks
                 fs.renameSync(oldPath, finalPath);
-                log.info(`Berhasil memindahkan: ${file} -> ${path.basename(finalPath)}`);
+                log.success(`[ProcessInbox] Moved: ${file} → ${path.basename(finalPath)}`);
+                movedCount++;
 
             } catch (err) {
-                log.error(`Gagal memproses ${file}: ${err.message}`);
+                log.error(`[ProcessInbox] Failed to process ${file}: ${err.message}`);
                 logError('process-inbox.mjs (File Move)', err);
             }
-        });
+        }
+
+        log.info(`[ProcessInbox] Done. Moved: ${movedCount}, Skipped: ${skippedCount}`);
     } catch (err) {
-        console.error('Fatal Error processing inbox:', err.message);
+        log.error(`[ProcessInbox] ❌ Fatal error: ${err.message}`);
         logError('process-inbox.mjs', err);
         process.exit(1);
     }
