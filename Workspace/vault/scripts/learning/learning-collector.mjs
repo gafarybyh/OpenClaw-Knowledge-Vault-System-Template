@@ -1,6 +1,5 @@
 import { logError, log } from '../core/logger.mjs';
-import { callAI } from '../core/ai-client.mjs';
-import { parseAIJson } from '../core/json-parser.mjs';
+import { callAIJson, sleep } from '../core/ai-client.mjs';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import path from 'path';
@@ -12,31 +11,64 @@ const WORKSPACE_ROOT = path.resolve(__dirname, '../../../');
 // --- CONFIGURATION ---
 
 const LEARNINGS_DIR = path.join(WORKSPACE_ROOT, 'vault', '.system', 'temp_learnings');
-const MAX_MESSAGES = 50;
-const REQUEST_TIMEOUT_MS = 20_000;
+const MAX_MESSAGES = 200;
+const LESSON_MAX_WORDS = 30;
 
-const SYSTEM_PROMPT = `You are a Behavioral Learning Architect. Your goal is to extract "Behavioral Deltas" from a conversation—specifically, changes in how the agent should operate, interact, or solve problems.
+const VALID_CATEGORIES = [
+  'Tone/Style/Format',
+  'Tool/System',
+  'Preference/Efficiency',
+  'Code/Architecture',
+  'Workflow/Process',
+  'Security/Privacy',
+];
+
+const SYSTEM_PROMPT =
+  'You are a Behavioral Learning Architect. Extract only behavioral changes from conversations. ' +
+  'Output ONLY valid JSON. No markdown, no explanation, no preamble.';
+
+const USER_PROMPT = (transcript) =>
+  `Analyze this conversation transcript and extract behavioral deltas—changes in how the agent should operate.
+
+The transcript uses this format:
+user: <message>
+assistant: <message>
 
 DISTINCTION:
 - Knowledge (Ignore): "The capital of France is Paris."
 - Behavior (Extract): "Stop using formal greetings; use a direct, technical tone instead."
 
 FOCUS AREAS:
-1. CORRECTIONS: Explicit requests to change behavior, tone, style, or formatting. (e.g., "Don't use markdown tables here, use a list").
-2. ERRORS: Tool/script failures where a root cause and a fix were identified. (e.g., "The rtk command failed because of X, fixed by doing Y").
-3. INSIGHTS: User preferences or discovered efficiencies. (e.g., "The user prefers summaries at the top of the response").
+1. CORRECTIONS: Explicit requests to change behavior, tone, style, or formatting.
+2. ERRORS: Tool/script failures where a root cause and a fix were identified.
+3. INSIGHTS: User preferences or discovered efficiencies.
 
-CRITICAL OUTPUT REQUIREMENTS:
-- Output ONLY a single, valid JSON object.
-- NO preamble, NO markdown code blocks, NO explanations.
-- If nothing is found, output: {"corrections": [], "errors": [], "learnings": []}
+RULES:
+- "lesson" MUST be ≤ ${LESSON_MAX_WORDS} words. Be specific, not verbose.
+- "category" MUST be one of: ${VALID_CATEGORIES.join(', ')}.
+- Do NOT duplicate the same insight in different categories.
+- If nothing relevant is found, output: {"corrections": [], "errors": [], "learnings": []}
 
-Expected Format:
-{
-  "corrections": [{"category": "Tone/Style/Format", "lesson": "The actual behavioral change"}],
-  "errors": [{"category": "Tool/System", "lesson": "The error and its resolution"}],
-  "learnings": [{"category": "Preference/Efficiency", "lesson": "The discovered insight"}]
-}`;
+Example:
+Transcript:
+user: Please stop using bullet points, just use numbered lists
+assistant: Understood, I'll use numbered lists going forward.
+
+→ {"corrections": [{"category": "Tone/Style/Format", "lesson": "Use numbered lists instead of bullet points when the user requests it."}], "errors": [], "learnings": []}
+
+Transcript:
+<<user_content>
+${transcript}
+</user_content>
+
+Output:`;
+
+function truncateLesson(text) {
+  if (!text || typeof text !== 'string') return '';
+  const words = text.replace(/[\r\n]+/g, ' ').trim().split(/\s+/);
+  if (words.length <= LESSON_MAX_WORDS) return words.join(' ');
+  return words.slice(0, LESSON_MAX_WORDS).join(' ');
+}
 
 function getMessageText(content) {
   if (typeof content === 'string') return content;
@@ -114,32 +146,48 @@ function parseTranscript(transcriptPath) {
     } catch (e) {
       // Only log if it looks like it should have been JSON
       if (trimmed.startsWith('{')) {
-        console.warn(`[Collector] Skipping malformed JSON line: ${trimmed.substring(0, 50)}...`);
+        log.warn(`[Collector] Skipping malformed JSON line: ${trimmed.substring(0, 50)}...`);
       }
     }
   }
   return messages;
 }
 
-async function collectLearnings(conversation) {
-  try {
-    const content = await callAI([
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: conversation },
-    ], { temperature: 0, timeoutMs: REQUEST_TIMEOUT_MS });
-
-    if (content) {
-      const { data, error } = parseAIJson(content, 'learning-collector.mjs');
-      if (data) {
-        log.info('[Collector] ✅ AI learning collection successful.');
-        return data;
-      }
-      if (error) log.error(`[Collector] ⚠️ JSON parse failed: ${error}`);
-    }
-  } catch (err) {
-    log.error(`[Collector] ⚠️ AI learning collection failed: ${err.message}`);
-    logError('learnings-collector.mjs', err);
+function normalizeCategory(cat) {
+  if (!cat || typeof cat !== 'string') return 'Preference/Efficiency';
+  if (VALID_CATEGORIES.includes(cat)) return cat;
+  // Fuzzy match: find closest valid category
+  const lower = cat.toLowerCase();
+  const match = VALID_CATEGORIES.find(c => c.toLowerCase() === lower);
+  if (match) return match;
+  // Fallback: partial match
+  for (const valid of VALID_CATEGORIES) {
+    if (lower.includes(valid.split('/')[0].toLowerCase())) return valid;
   }
+  return 'Preference/Efficiency';
+}
+
+async function collectLearnings(conversation) {
+  const result = await callAIJson([
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user', content: USER_PROMPT(conversation) },
+  ], { temperature: 0, promptLabel: 'learning-collector' });
+
+  if (result.data) {
+    // Normalize categories and truncate lessons
+    for (const arr of [result.data.corrections, result.data.errors, result.data.learnings]) {
+      if (!Array.isArray(arr)) continue;
+      for (const entry of arr) {
+        if (entry.category) entry.category = normalizeCategory(entry.category);
+        if (entry.lesson) entry.lesson = truncateLesson(entry.lesson);
+      }
+    }
+    log.info(`[Collector] ✅ AI learning collection successful (${result.attempts} attempt(s)).`);
+    return result.data;
+  }
+
+  log.error(`[Collector] ⚠️ JSON parse failed after ${result.attempts} attempts: ${result.error}`);
+  logError('learning-collector.mjs', new Error(result.error));
 
   log.info('🛡️ Graceful Degradation: Returning clean empty learning schema.');
   return { corrections: [], errors: [], learnings: [] };
@@ -152,14 +200,26 @@ function saveLearning(category, entries, sessionName) {
   const fileName = category === 'corrections' ? 'corrections.md' :
     category === 'errors' ? 'ERRORS.md' : 'LEARNINGS.md';
 
+  const filePath = path.join(LEARNINGS_DIR, fileName);
+
+  // Load existing entries to prevent duplicates on re-runs
+  let existingContent = '';
+  try { existingContent = fs.readFileSync(filePath, 'utf8'); } catch {}
+
   const date = new Date().toISOString().split('T')[0];
-  const formattedEntries = entries.map(e => {
+  const newLines = [];
+  for (const e of entries) {
     const lesson = typeof e === 'object' ? e.lesson : e;
     const cat = typeof e === 'object' ? `[${e.category}]` : '[General]';
-    return `- [${date}] [Session: ${sessionName}] ${cat} ${lesson}`;
-  }).join('\n');
+    const line = `- [${date}] [Session: ${sessionName}] ${cat} ${lesson}`;
+    // Skip if this exact lesson already exists for the same session
+    if (existingContent.includes(`[Session: ${sessionName}]`) && existingContent.includes(lesson)) continue;
+    newLines.push(line);
+  }
 
-  fs.appendFileSync(path.join(LEARNINGS_DIR, fileName), formattedEntries + '\n', 'utf8');
+  if (newLines.length > 0) {
+    fs.appendFileSync(filePath, newLines.join('\n') + '\n', 'utf8');
+  }
 }
 
 async function main() {
@@ -187,7 +247,7 @@ async function main() {
 
   if (!transcriptPath || !fs.existsSync(transcriptPath)) {
     log.error('[Collector] ❌ No transcript path provided or found.');
-    logError('learnings-collector.mjs', new Error('No transcript path provided or found'));
+    logError('learning-collector.mjs', new Error('No transcript path provided or found'));
     process.exit(1);
   }
 
