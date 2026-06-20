@@ -9,8 +9,7 @@
  */
 
 import { logError, log } from '../core/logger.mjs';
-import { callAI } from '../core/ai-client.mjs';
-import { parseAIJson } from '../core/json-parser.mjs';
+import { callAIJson } from '../core/ai-client.mjs';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import path from 'path';
@@ -22,39 +21,56 @@ const WORKSPACE_ROOT = path.resolve(__dirname, '../../../');
 // --- CONFIGURATION ---
 const REFLECTIONS_DIR = path.join(WORKSPACE_ROOT, 'vault', '01_thinking', 'reflections');
 const RULEBOOK_PATH = path.join(WORKSPACE_ROOT, 'vault', '01_thinking', 'AGENT-BEHAVIORAL-RULEBOOK.md');
+const MAX_INPUT_CHARS = 25000;
+const MAX_BACKUPS = 3;
+const MAX_RULES = 50;
 
-const SYSTEM_PROMPT = `You are a Behavioral Architect specializing in AI alignment and performance optimization.
-Your task is to analyze a collection of self-reflection reports and synthesize them into a set of high-level, prescriptive behavioral rules.
+const VALID_CATEGORIES = ['Reasoning', 'Tool Use', 'Communication', 'Context Management', 'Efficiency', 'Architecture', 'Security'];
 
-### GOAL:
-Transform "symptoms of failure" into "preventative rules". 
-Instead of saying "The agent failed to X", say "Always do Y to avoid X".
+const SYSTEM_PROMPT =
+  'You are a Behavioral Architect specializing in AI alignment and performance optimization. ' +
+  'Analyze self-reflection reports and synthesize prescriptive behavioral rules. ' +
+  'Output ONLY valid JSON. No markdown, no explanation, no preamble.';
 
-### NON-DUPLICATION PROTOCOL:
-You will be provided with the CURRENT Behavioral Rulebook. 
-1. **Analyze Existing Rules**: Carefully review the current rules to avoid redundancy.
-2. **Filter Redundancy**: If a suggested rule is already covered by an existing rule (even if phrased differently), DO NOT include it.
-3. **Refine/Expand**: Only include a rule if it fills a gap, corrects a systemic failure not yet addressed, or significantly improves an existing rule.
+const USER_PROMPT = (rulebook, reflections) =>
+  `Analyze these self-reflection reports and synthesize prescriptive behavioral rules, avoiding duplication with the current rulebook.
 
-### GUIDELINES:
-1. **Pattern Recognition**: Identify recurring failures across multiple reports.
-2. **Prescriptive Tone**: Rules must be clear, actionable, and mandatory (e.g., "Always...", "Never...", "Before doing X, first Y...").
-3. **Categorization**: Group rules into categories (e.g., Reasoning, Tool Use, Communication, Context Management).
-4. **Conciseness**: Avoid fluff. Each rule should be a single, powerful sentence.
+GOAL:
+Transform "symptoms of failure" into "preventative rules".
+Instead of "The agent failed to X", say "Always do Y to avoid X".
 
-### OUTPUT FORMAT:
-You must output a single, valid JSON object. NO preamble, NO markdown wrappers.
+NON-DUPLICATION PROTOCOL:
+1. Analyze the CURRENT RULEBOOK carefully to avoid redundancy.
+2. If a suggested rule is already covered (even if phrased differently), DO NOT include it.
+3. Only include a rule if it fills a gap, corrects a systemic failure, or significantly improves an existing rule.
 
-{
-  "synthesized_rules": [
-    {
-      "category": "Category Name",
-      "rule": "The prescriptive rule",
-      "reason": "Brief explanation of the failure pattern this rule prevents"
-    }
-  ],
-  "analysis_summary": "A brief summary of the systemic patterns identified and how they differ from existing rules."
-}`;
+RULES:
+- "rule" MUST be ≤ 25 words. Use prescriptive tone: "Always...", "Never...", "Before doing X, first Y..."
+- "reason" MUST be ≤ 15 words. Briefly explain the failure pattern this prevents.
+- "category" MUST be one of: ${VALID_CATEGORIES.join(', ')}.
+- Max ${MAX_RULES} rules total. Prioritize recurring patterns across multiple reports.
+
+Example:
+Current Rulebook has: "Always read error messages before making changes."
+
+Reflection Reports:
+File: reflection-2024-01-15-1234.md
+Summary: Agent ignored CSS error and made blind fixes
+Corrective Actions: Read error messages first
+
+→ {"synthesized_rules": [], "analysis_summary": "No new rules needed; existing 'Always read error messages' rule already covers this pattern."}
+
+CURRENT RULEBOOK:
+<<user_content>
+${rulebook}
+</user_content>
+
+REFLECTION REPORTS TO ANALYZE:
+<<user_content>
+${reflections}
+</user_content>
+
+Output:`;
 
 // ==================== UTILITIES ====================
 
@@ -76,7 +92,7 @@ function extractReflectionData(filePath) {
       actions
     };
   } catch (err) {
-    console.warn(`⚠️ Failed to parse reflection ${filePath}: ${err.message}`);
+    log.warn(`[ReflectionSynth] ⚠️ Failed to parse reflection ${path.basename(filePath)}: ${err.message}`);
     return null;
   }
 }
@@ -84,6 +100,32 @@ function extractReflectionData(filePath) {
 
 
 // ==================== CORE LOGIC ====================
+
+function validateSynthesis(data) {
+  if (!data || typeof data !== 'object') return null;
+  if (!Array.isArray(data.synthesized_rules)) data.synthesized_rules = [];
+  if (typeof data.analysis_summary !== 'string') data.analysis_summary = '';
+
+  // Validate and truncate each rule
+  data.synthesized_rules = data.synthesized_rules
+    .filter(r => r && typeof r.rule === 'string' && r.rule.trim())
+    .slice(0, MAX_RULES)
+    .map(r => {
+      const rule = r.rule.replace(/[\r\n]+/g, ' ').trim().split(/\s+/);
+      const reason = (r.reason || '').replace(/[\r\n]+/g, ' ').trim().split(/\s+/);
+      return {
+        category: VALID_CATEGORIES.includes(r.category) ? r.category : 'Reasoning',
+        rule: rule.length > 25 ? rule.slice(0, 25).join(' ') : rule.join(' '),
+        reason: reason.length > 15 ? reason.slice(0, 15).join(' ') : reason.join(' '),
+      };
+    });
+
+  // Truncate summary
+  const words = data.analysis_summary.replace(/[\r\n]+/g, ' ').trim().split(/\s+/);
+  if (words.length > 50) data.analysis_summary = words.slice(0, 50).join(' ');
+
+  return data;
+}
 
 async function synthesizeReflections() {
   if (!fs.existsSync(REFLECTIONS_DIR)) {
@@ -109,35 +151,53 @@ async function synthesizeReflections() {
     .map(f => extractReflectionData(path.join(REFLECTIONS_DIR, f)))
     .filter(Boolean);
 
-  const promptContent = aggregatedData
+  let promptContent = aggregatedData
     .map(d => `File: ${d.file}\nSummary: ${d.summary}\nCorrective Actions:\n${d.actions}`)
     .join('\n\n---\n\n');
 
-  try {
-    log.info('📡 Synthesizing systemic patterns (Rulebook-Aware) via AI Client...');
-    const response = await callAI([
-      { role: 'system', content: SYSTEM_PROMPT },
-      { 
-        role: 'user', 
-        content: `### CURRENT BEHAVIORAL RULEBOOK:\n${currentRulebook}\n\n---\n\n### REFLECTION REPORTS TO ANALYZE:\n${promptContent}` 
-      }
-    ], { temperature: 0.2, timeoutMs: REQUEST_TIMEOUT_MS });
-
-    if (response) {
-      const { data, error } = parseAIJson(response, 'reflection-synthesizer.mjs');
-      if (data) {
-        return {
-          synthesis: data,
-          processedFiles: files
-        };
-      }
-      if (error) console.warn(`⚠️ Synthesizer JSON parse failed: ${error}`);
-    }
-  } catch (err) {
-    console.error('❌ Synthesis AI failed:', err.message);
-    logError('reflection-synthesizer.mjs', err);
+  // Truncate if input exceeds token safety limit
+  if (promptContent.length > MAX_INPUT_CHARS) {
+    log.warn(`[ReflectionSynth] ⚠️ Reflections truncated from ${promptContent.length} to ${MAX_INPUT_CHARS} chars.`);
+    promptContent = promptContent.substring(0, MAX_INPUT_CHARS) + '\n\n[TRUNCATED]';
   }
+
+  // Also cap rulebook size
+  if (currentRulebook.length > MAX_INPUT_CHARS) {
+    log.warn(`[ReflectionSynth] ⚠️ Current rulebook truncated to ${MAX_INPUT_CHARS} chars.`);
+    currentRulebook = currentRulebook.substring(0, MAX_INPUT_CHARS) + '\n\n[TRUNCATED]';
+  }
+
+  log.info('📡 Synthesizing systemic patterns...');
+  const result = await callAIJson([
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user', content: USER_PROMPT(currentRulebook, promptContent) }
+  ], { temperature: 0.2, promptLabel: 'reflection-synthesizer' });
+
+  if (result.data) {
+    const validated = validateSynthesis(result.data);
+    if (validated) {
+      return { synthesis: validated, processedFiles: files };
+    }
+  }
+
+  if (result.error) {
+    log.warn(`[ReflectionSynth] ⚠️ AI synthesis failed after ${result.attempts} attempts: ${result.error}`);
+    logError('reflection-synthesizer.mjs', new Error(result.error));
+  }
+
   return null;
+}
+
+function rotateBackup() {
+  for (let i = MAX_BACKUPS; i < 99; i++) {
+    const oldBackup = `${RULEBOOK_PATH}.bak${i > 1 ? i : ''}`;
+    const prevBackup = i === 1 ? `${RULEBOOK_PATH}.bak` : `${RULEBOOK_PATH}.bak${i}`;
+    if (fs.existsSync(oldBackup)) fs.unlinkSync(oldBackup);
+    if (fs.existsSync(prevBackup)) {
+      const next = i === 1 ? `${RULEBOOK_PATH}.bak2` : `${RULEBOOK_PATH}.bak${i + 1}`;
+      fs.renameSync(prevBackup, next);
+    }
+  }
 }
 
 async function updateRulebook(synthesis) {
@@ -148,35 +208,36 @@ async function updateRulebook(synthesis) {
 
   let rulebookContent = fs.readFileSync(RULEBOOK_PATH, 'utf8');
   
-  // Create a section for Synthesized Rules if it doesn't exist
   const sectionHeader = '## 🧠 Synthesized Behavioral Rules (from Reflections)';
-  let sectionExists = rulebookContent.includes(sectionHeader);
+  const sectionExists = rulebookContent.includes(sectionHeader);
   
-  let newRulesMarkdown = '\n\n' + sectionHeader + '\n';
-  
-  // Group rules by category
+  // Build rules markdown
   const categories = {};
   synthesis.synthesized_rules.forEach(r => {
     if (!categories[r.category]) categories[r.category] = [];
     categories[r.category].push(r);
   });
 
+  let rulesBody = '';
   for (const [category, rules] of Object.entries(categories)) {
-    newRulesMarkdown += `\n### ${category}\n`;
+    rulesBody += `\n### ${category}\n`;
     rules.forEach(r => {
-      newRulesMarkdown += `- **${r.rule}** (Reason: ${r.reason})\n`;
+      rulesBody += `- **${r.rule}** (Reason: ${r.reason})\n`;
     });
   }
 
   if (sectionExists) {
-    // Append new rules to the existing section to preserve history
-    const newRulesOnly = newRulesMarkdown.replace('\\n\\n' + sectionHeader + '\\n', '');
-    const regex = new RegExp(`${sectionHeader}[\\s\\S]*?(?=\\n#|$)`, 'g');
-    rulebookContent = rulebookContent.replace(regex, match => match.trimEnd() + '\\n' + newRulesOnly);
+    // Replace existing section with updated content
+    const regex = new RegExp(`\n${sectionHeader}[\\s\\S]*?(?=\\n## |$)`, 'g');
+    const replacement = `\n${sectionHeader}\n${rulesBody.trimEnd()}`;
+    rulebookContent = rulebookContent.replace(regex, replacement);
   } else {
-    // Append to the end of the file
-    rulebookContent += '\n' + newRulesMarkdown;
+    rulebookContent += `\n\n${sectionHeader}\n${rulesBody}`;
   }
+
+  // Backup with rotation
+  rotateBackup();
+  fs.copyFileSync(RULEBOOK_PATH, `${RULEBOOK_PATH}.bak`);
 
   // Atomic write
   const tmpPath = RULEBOOK_PATH + '.tmp';
@@ -216,6 +277,24 @@ function cleanupOldReflections() {
   }
 }
 
+function markFilesAsClaimed(files) {
+  log.info('🏷️ Marking processed reports as claimed...');
+  let count = 0;
+  for (const file of files) {
+    try {
+      const oldPath = path.join(REFLECTIONS_DIR, file);
+      const newPath = path.join(REFLECTIONS_DIR, file.replace('.md', '-claimed.md'));
+      if (fs.existsSync(oldPath)) {
+        fs.renameSync(oldPath, newPath);
+        count++;
+      }
+    } catch (e) {
+      log.warn(`[ReflectionSynth] Failed to claim ${file}: ${e.message}`);
+    }
+  }
+  if (count > 0) log.success(`✅ ${count} reports marked as claimed.`);
+}
+
 async function main() {
   try {
     const result = await synthesizeReflections();
@@ -223,36 +302,22 @@ async function main() {
       log.step('✨ New systemic patterns identified. Updating rulebook...');
       log.info(`Summary: ${result.synthesis.analysis_summary}`);
       await updateRulebook(result.synthesis);
-      
-      // Mark files as claimed
-      log.info('🏷️ Marking processed reports as claimed...');
-      result.processedFiles.forEach(file => {
-        const oldPath = path.join(REFLECTIONS_DIR, file);
-        const newPath = path.join(REFLECTIONS_DIR, file.replace('.md', '-claimed.md'));
-        fs.renameSync(oldPath, newPath);
-      });
-      log.success(`✅ ${result.processedFiles.length} reports marked as claimed.`);
     } else if (result && result.synthesis) {
       log.info('ℹ️ No new systemic patterns found that aren\'t already in the rulebook.');
-      
-      // Even if no new rules were added, the files were analyzed and found redundant.
-      // Mark them as claimed anyway to avoid re-analyzing them.
-      log.info('🏷️ Marking analyzed reports as claimed...');
-      result.processedFiles.forEach(file => {
-        const oldPath = path.join(REFLECTIONS_DIR, file);
-        const newPath = path.join(REFLECTIONS_DIR, file.replace('.md', '-claimed.md'));
-        fs.renameSync(oldPath, newPath);
-      });
-      log.success(`✅ ${result.processedFiles.length} reports marked as claimed.`);
     } else {
       log.info('ℹ️ No new unclaimed reflection files found to synthesize.');
     }
     
-    // Jalankan Garbage Collection
+    // Mark files as claimed (if any were processed)
+    if (result && result.processedFiles && result.processedFiles.length > 0) {
+      markFilesAsClaimed(result.processedFiles);
+    }
+    
+    // Garbage Collection
     cleanupOldReflections();
     
   } catch (err) {
-    console.error('Reflection Synthesizer Error:', err.message);
+    log.error(`[ReflectionSynth] ❌ Reflection Synthesizer Error: ${err.message}`);
     logError('reflection-synthesizer.mjs', err);
     process.exit(1);
   }
