@@ -3,9 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { globSync } from 'glob';
-import crypto from 'crypto';
-import { callAI } from '../core/ai-client.mjs';
-import { parseAIJson } from '../core/json-parser.mjs';
+import { callAIJson, sleep } from '../core/ai-client.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,48 +13,76 @@ const WORKSPACE_ROOT = path.resolve(__dirname, '../../../');
 
 const VAULT_PATH = path.join(WORKSPACE_ROOT, 'vault');
 const KNOWLEDGE_PATH = path.join(VAULT_PATH, '01_thinking/knowledge');
+const AI_CALL_DELAY_MS = 1500;
+const MAX_INPUT_CHARS = 15000;
 
 // --- UTILITIES ---
 
+function truncate(text, maxChars) {
+  if (!text || text.length <= maxChars) return text;
+  return text.substring(0, maxChars) + '\n[TRUNCATED]';
+}
+
+const SYSTEM_PROMPT =
+  'You are a Knowledge Integrity Architect. Detect and resolve contradictions between two claims in a Zettelkasten vault. ' +
+  'Output ONLY valid JSON. No markdown, no explanation, no preamble.';
+
+const USER_PROMPT = (fileA, contentA, fileB, contentB) =>
+  `Analyze these two claims for contradictions.
+
+A contradiction occurs if:
+1. One claim asserts a fact that the other explicitly denies.
+2. They make mutually exclusive claims about the same topic.
+3. One claim is a general rule that the other presents as a universal exception without nuance.
+
+If a conflict is found, propose a resolution:
+- "RESOLVE_NUANCE": Both are true but apply to different contexts. Explain the nuance in "suggestion" (≤30 words).
+- "RESOLVE_DEPRECATE": One claim is outdated/incorrect. Specify which in "deprecated_file" (A or B).
+- "RESOLVE_MERGE": Claims are complementary and should be combined.
+
+Example:
+Note A (react-hooks-performance):
+React hooks optimize rendering performance in component patterns.
+
+Note B (react-hooks-memory):
+React hooks can cause memory leaks if cleanup is not performed correctly.
+
+→ {"conflict": false}
+
+Note A (css-flexbox-layout):
+Flexbox is the best layout method for all web pages.
+
+Note B (css-grid-layout):
+Grid is the only layout method that should be used for complex pages.
+
+→ {"conflict": true, "resolution_type": "RESOLVE_NUANCE", "suggestion": "Flexbox excels at 1D layouts while Grid handles 2D. Both are valid for their respective use cases.", "deprecated_file": "none"}
+
+Note A (${fileA}):
+<<user_content>
+${contentA}
+</user_content>
+
+Note B (${fileB}):
+<<user_content>
+${contentB}
+</user_content>
+
+Output:`;
+
 async function analyzeConflict(fileA, contentA, fileB, contentB) {
-  const SYSTEM_PROMPT = `You are a Knowledge Integrity Architect. Your goal is to detect and resolve contradictions between two claims in a Zettelkasten vault.
-  
-  A contradiction occurs if:
-  1. One claim asserts a fact that the other explicitly denies.
-  2. They make mutually exclusive claims about the same topic.
-  3. One claim is a general rule that the other presents as a universal exception without nuance.
+  const safeA = truncate(contentA, MAX_INPUT_CHARS);
+  const safeB = truncate(contentB, MAX_INPUT_CHARS);
 
-  If a conflict is found, you must propose a resolution:
-  - "RESOLVE_NUANCE": Both are true but apply to different contexts. Provide a concise explanation of the nuance.
-  - "RESOLVE_DEPRECATE": One claim is clearly outdated, incorrect, or superseded. Specify which one (A or B) should be deprecated.
-  - "RESOLVE_MERGE": The claims are complementary and should be combined into a single, more comprehensive claim.
+  const result = await callAIJson([
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user', content: USER_PROMPT(fileA, safeA, fileB, safeB) },
+  ], { temperature: 0, promptLabel: 'conflict-resolver' });
 
-  Output ONLY valid JSON:
-  {"conflict": true, "resolution_type": "RESOLVE_NUANCE|RESOLVE_DEPRECATE|RESOLVE_MERGE", "suggestion": "explanation", "deprecated_file": "A|B|none"}
-  or {"conflict": false}.`;
+  if (result.data) return result.data;
 
-  const prompt = `Analyze these two claims for contradictions:
-  
-  Note A (${fileA}):
-  ${contentA}
-  
-  Note B (${fileB}):
-  ${contentB}`;
-
-  try {
-    const content = await callAI([
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: prompt },
-    ], { temperature: 0 });
-
-    if (content) {
-      const { data, error } = parseAIJson(content, 'conflict-resolver.mjs');
-      if (data) return data;
-      if (error) log.warn(`⚠️ Conflict resolver JSON parse failed: ${error}`);
-    }
-  } catch (err) {
-    console.warn(`⚠️ Conflict analysis failed: ${err.message}`);
-    logError('conflict-resolver.mjs', err);
+  if (result.error) {
+    log.warn(`[ConflictResolver] ⚠️ Conflict analysis failed after ${result.attempts} attempts: ${result.error}`);
+    logError('conflict-resolver.mjs', new Error(result.error));
   }
 
   return { conflict: false };
@@ -78,12 +104,19 @@ function applyResolution(fileA, fileB, resolution) {
       }
     });
   } else if (resolution.resolution_type === 'RESOLVE_DEPRECATE') {
-    const target = resolution.deprecated_file === 'A' ? pathA : pathB;
-    const targetName = resolution.deprecated_file === 'A' ? fileA : fileB;
-    
+    // Validate deprecated_file field — only accept 'A' or 'B'
+    const deprecationTarget = resolution.deprecated_file === 'A' ? 'A' :
+      resolution.deprecated_file === 'B' ? 'B' : null;
+    if (!deprecationTarget) {
+      log.warn(`[ConflictResolver] ⚠️ Invalid deprecated_file value: "${resolution.deprecated_file}". Skipping deprecation.`);
+      return;
+    }
+    const target = deprecationTarget === 'A' ? pathA : pathB;
+    const targetName = deprecationTarget === 'A' ? fileA : fileB;
+
     if (fs.existsSync(target) && !targetName.startsWith('[DEPRECATED]')) {
       log.warn(`🚫 Deprecating ${targetName}...`);
-      const newPath = path.join(KNOWLEDGE_PATH, '[DEPRECATED]' + targetName + '.md');
+      const newPath = path.join(KNOWLEDGE_PATH, '[DEPRECATED] ' + targetName + '.md');
       fs.renameSync(target, newPath);
     }
   } else if (resolution.resolution_type === 'RESOLVE_MERGE') {
@@ -100,7 +133,7 @@ function safeWriteFile(filePath, content) {
     fs.writeFileSync(tempPath, content, 'utf8');
     fs.renameSync(tempPath, filePath);
   } catch (e) {
-    log.error(`❌ Atomic write failed for ${filePath}: ${e.message}`);
+    log.error(`[ConflictResolver] ❌ Atomic write failed for ${filePath}: ${e.message}`);
     logError('conflict-resolver.mjs', e);
     throw e;
   }
@@ -108,7 +141,7 @@ function safeWriteFile(filePath, content) {
 
 async function main() {
   log.step('🚀 Starting Conflict Resolver...');
-  
+
   const files = globSync(`${KNOWLEDGE_PATH}/*.md`).filter(f => !path.basename(f).startsWith('[DEPRECATED]'));
   const contents = {};
   const fileNames = [];
@@ -121,10 +154,11 @@ async function main() {
 
   const processedPairs = new Set();
   let conflictsFound = 0;
+  let totalCalls = 0;
 
   for (const nameA of fileNames) {
     const contentA = contents[nameA];
-    
+
     // Only check files that have semantic relations (candidates for conflict)
     if (!contentA.includes('## Semantic Relations')) continue;
 
@@ -132,7 +166,7 @@ async function main() {
     if (!relationsMatch) continue;
 
     const relations = relationsMatch[1].split('\n').filter(line => line.trim().match(/^-\s*(?:[\w-]+::\s*)?\[\[/));
-    
+
     for (const rel of relations) {
       const nameB = rel.match(/\[\[(.*?)(?:\|.*?)?\]\]/)?.[1];
       if (!nameB || nameB === nameA) continue;
@@ -145,22 +179,26 @@ async function main() {
 
       log.debug(`🔍 Checking for conflict: ${nameA} <-> ${nameB}...`);
       try {
+        // Rate limit: delay between AI calls to prevent 429
+        if (totalCalls > 0) await sleep(AI_CALL_DELAY_MS);
+
         const result = await analyzeConflict(nameA, contentA, nameB, contents[nameB]);
+        totalCalls++;
         if (result.conflict) {
           conflictsFound++;
           log.warn(`⚠️ Conflict found! Type: ${result.resolution_type}`);
           applyResolution(nameA, nameB, result);
         }
       } catch (e) {
-        log.error(`Error analyzing ${nameA} <-> ${nameB}: ${e.message}`);
+        log.error(`[ConflictResolver] Error analyzing ${nameA} <-> ${nameB}: ${e.message}`);
       }
     }
   }
 
-  log.info(`\\n✨ Conflict Resolution Complete. Found and processed ${conflictsFound} conflicts.`);
+  log.info(`\n✨ Conflict Resolution Complete. Processed ${totalCalls} pairs, found ${conflictsFound} conflicts.`);
 }
 
 main().catch(err => {
+  log.error(`[ConflictResolver] ❌ Fatal error: ${err.message}`);
   logError('conflict-resolver.mjs', err);
-  console.error('❌ Fatal error in Conflict Resolver:', err);
 });
