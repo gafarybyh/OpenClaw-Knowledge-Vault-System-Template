@@ -15,7 +15,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { globSync } from 'glob';
 import crypto from 'crypto';
-import { logError } from '../core/logger.mjs';
+import { logError, log } from '../core/logger.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,7 +33,7 @@ function parseFrontmatter(content) {
   const body = content.substring(match[0].length).trim();
   const metadata = {};
 
-  yamlText.split(/\r?\n/).forEach(line => {
+  for (const line of yamlText.split(/\r?\n/)) {
     const colonIndex = line.indexOf(':');
     if (colonIndex > -1) {
       const key = line.substring(0, colonIndex).trim();
@@ -52,7 +52,7 @@ function parseFrontmatter(content) {
       }
       metadata[key] = value;
     }
-  });
+  }
   return { metadata, body };
 }
 
@@ -154,7 +154,7 @@ function parseTypedLinks(contentWithoutCode, fileName, graphNodes) {
       files = allFiles.filter(f => !EXCLUDED_FOLDERS.some(folder => f.includes(folder)));
     } catch (e) {
       logError('indexer.mjs', e);
-      console.log(JSON.stringify({ status: "error", error: `Glob failed: ${e.message}` }, null, 2));
+      log.error(`[Indexer] ❌ Glob failed: ${e.message}`);
       process.exit(1);
     }
 
@@ -191,12 +191,7 @@ function parseTypedLinks(contentWithoutCode, fileName, graphNodes) {
         if (changed.length > 0 && changed.length < files.length) {
           filesToProcess = changed;
           isIncremental = true;
-          console.log(JSON.stringify({ 
-            status: "info", 
-            mode: "incremental", 
-            changed: changed.length, 
-            total: files.length 
-          }));
+          log.info(`[Indexer] ℹ️ Incremental mode: ${changed.length}/${files.length} files changed`);
         }
       } catch {
         existingGraph = { metadata: { version: 8, lastIndexed: new Date().toISOString(), totalFiles: 0 }, nodes: {} };
@@ -204,7 +199,7 @@ function parseTypedLinks(contentWithoutCode, fileName, graphNodes) {
     }
 
     // Fase 1: Inisialisasi / Update Node untuk file yang berubah
-    filesToProcess.forEach(file => {
+    for (const file of filesToProcess) {
       try {
       const fileName = path.basename(file, '.md');
       const stats = fs.statSync(file);
@@ -222,9 +217,9 @@ function parseTypedLinks(contentWithoutCode, fileName, graphNodes) {
       };
       } catch (e) {
         logError('indexer.mjs', e);
-        console.error(`⚠️ Cannot stat ${file}: ${e.message}`);
+        log.error(`[Indexer] ⚠️ Cannot stat ${file}: ${e.message}`);
       }
-    });
+    }
 
     // Fase 2: Parse file yang berubah
     await Promise.all(filesToProcess.map(async (file) => {
@@ -275,7 +270,7 @@ function parseTypedLinks(contentWithoutCode, fileName, graphNodes) {
       }
       } catch (err) {
         logError('indexer.mjs', err);
-        console.error(`⚠️ Failed to parse ${file}: ${err.message}`);
+        log.error(`[Indexer] ⚠️ Failed to parse ${file}: ${err.message}`);
         // Remove broken node if it was just initialized
         const fileName = path.basename(file, '.md');
         if (existingGraph.nodes[fileName]?.contentHash === '') {
@@ -347,26 +342,15 @@ function parseTypedLinks(contentWithoutCode, fileName, graphNodes) {
     const totalInferred = Object.values(existingGraph.nodes).reduce((sum, n) =>
       sum + (n.typedLinks?.filter(t => t.inferred)?.length || 0), 0);
     const totalAI = totalTyped - totalInferred;
+    const durationMs = Date.now() - t0;
 
-    console.log(JSON.stringify({
-      status: "success",
-      message: "Graph index written",
-      file: OUTPUT_FILE,
-      mode: isIncremental ? 'incremental' : 'full',
-      totalNodes: Object.keys(existingGraph.nodes).length,
-      totalTypedLinks: totalTyped,
-      inferredLinks: totalInferred,
-      aiValidatedLinks: totalAI,
-      durationMs: Date.now() - t0
-    }, null, 2));
+    log.success(`[Indexer] ✅ Graph index written to ${path.basename(OUTPUT_FILE)}`);
+    log.info(`[Indexer] Mode: ${isIncremental ? 'incremental' : 'full'} | Nodes: ${Object.keys(existingGraph.nodes).length} | Duration: ${durationMs}ms`);
+    log.info(`[Indexer] Typed links: ${totalTyped} (AI: ${totalAI}, Inferred: ${totalInferred})`);
 
   } catch (err) {
     logError('indexer.mjs', err);
-    console.log(JSON.stringify({
-      status: "error",
-      error: err.message,
-      stack: err.stack
-    }, null, 2));
+    log.error(`[Indexer] ❌ ${err.message}`);
     process.exit(1);
   }
 })();
