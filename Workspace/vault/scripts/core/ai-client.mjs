@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { logError } from './logger.mjs';
+import { logError, log } from './logger.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,13 +15,13 @@ export function loadEnv() {
     const envPath = path.join(WORKSPACE_ROOT, '.env');
     if (fs.existsSync(envPath)) {
       const content = fs.readFileSync(envPath, 'utf8');
-      content.split(/\r?\n/).forEach(line => {
+      for (const line of content.split(/\r?\n/)) {
         const [key, ...valueParts] = line.split('=');
         if (key && valueParts.length > 0) {
           const value = valueParts.join('=').trim();
           if (!process.env[key.trim()]) process.env[key.trim()] = value;
         }
-      });
+      }
     }
   } catch (e) {
     logError('ai-client.mjs', e);
@@ -33,7 +33,7 @@ loadEnv();
 
 // Configuration from Env
 export const AI_CONFIG = {
-  requestDelay: parseInt(process.env.AI_REQUEST_DELAY) || 200, // Jeda antar request dalam ms
+  requestDelay: parseInt(process.env.AI_REQUEST_DELAY) || 1000, // Jeda antar request dalam ms
   embedding: {
     url: process.env.EMBEDDING_URL || 'http://localhost:11434/api/embed',
     model: process.env.EMBEDDING_MODEL || 'nomic-embed-text',
@@ -100,7 +100,21 @@ export function sleep(ms) {
 export async function callAI(messages, options = {}) {
   const { primary, fallback } = AI_CONFIG;
 
-  const timeoutMs = options.timeoutMs || 30000;
+  const timeoutMs = options.timeoutMs || 50000;
+
+  // Build request body — inject response_format for JSON-mode providers
+  const buildBody = (model) => {
+    const body = {
+      model: model,
+      messages: messages,
+      temperature: options.temperature ?? 0.3,
+      ...options.extraParams,
+    };
+    if (options.jsonMode) {
+      body.response_format = { type: 'json_object' };
+    }
+    return body;
+  };
 
   // 1. Try Primary AI
   try {
@@ -110,12 +124,7 @@ export async function callAI(messages, options = {}) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${primary.key}`
       },
-      body: JSON.stringify({
-        model: options.model || primary.model,
-        messages: messages,
-        temperature: options.temperature ?? 0.3,
-        ...options.extraParams
-      }),
+      body: JSON.stringify(buildBody(options.model || primary.model)),
       signal: AbortSignal.timeout(timeoutMs)
     });
 
@@ -126,7 +135,7 @@ export async function callAI(messages, options = {}) {
     }
     
     const data = await response.json();
-    console.error('🔄 Primary AI responded OK.');
+    log.debug('[AI] 🔄 Primary AI responded OK.');
     return data.choices?.[0]?.message?.content || data.content;
   } catch (e) {
     logError('ai-client.mjs', new Error(`Primary AI failed: ${e.message}. Switching to fallback...`));
@@ -143,12 +152,7 @@ export async function callAI(messages, options = {}) {
         'Content-Type': 'application/json',
         ...(!isGemini && { 'Authorization': `Bearer ${fallback.key}` })
       },
-      body: JSON.stringify({
-        model: options.model || fallback.model,
-        messages: messages,
-        temperature: options.temperature ?? 0.3,
-        ...options.extraParams
-      }),
+      body: JSON.stringify(buildBody(options.model || fallback.model)),
       signal: AbortSignal.timeout(timeoutMs)
     });
 
@@ -159,10 +163,74 @@ export async function callAI(messages, options = {}) {
     }
     
     const data = await response.json();
-    console.error('🔄 Fallback AI responded OK.');
+    log.debug('[AI] 🔄 Fallback AI responded OK.');
     return data.choices?.[0]?.message?.content || data.content;
   } catch (e) {
     logError('ai-client.mjs', new Error(`All AI providers failed: ${e.message}`));
     // throw new Error(`All AI providers failed. Last error: ${e.message}`);
   }
+}
+
+/**
+ * Call AI and parse the response as JSON, with auto-retry on parse failure.
+ * Handles markdown wrappers, invalid escapes, trailing commas, etc.
+ *
+ * @param {Array} messages - Chat messages
+ * @param {Object} options - callAI options + { maxRetries, retryDelayMs, promptLabel }
+ * @returns {Promise<{ data: object|null, error: string|null, attempts: number }>}
+ */
+export async function callAIJson(messages, options = {}) {
+  const { parseAIJson } = await import('./json-parser.mjs');
+  const maxRetries = options.maxRetries ?? 3;
+  const retryDelayMs = options.retryDelayMs ?? 1500;
+  const label = options.promptLabel || 'callAIJson';
+
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // Always request jsonMode if the provider supports it
+      const content = await callAI(messages, { ...options, jsonMode: true });
+
+      if (!content) {
+        lastError = 'Empty AI response';
+        log.warn(`[${label}] Attempt ${attempt}: empty response`);
+        if (attempt < maxRetries) await sleep(retryDelayMs * attempt);
+        continue;
+      }
+
+      const { data, error } = parseAIJson(content, label);
+
+      if (data) {
+        if (attempt > 1) log.info(`[${label}] ✅ JSON parsed on attempt ${attempt}`);
+        return { data, error: null, attempts: attempt };
+      }
+
+      lastError = error;
+      log.warn(`[${label}] Attempt ${attempt}/${maxRetries} parse failed: ${error}`);
+
+      // On retry, append a correction hint to the last user message
+      if (attempt < maxRetries) {
+        const correctedMessages = [...messages];
+        const lastUserIdx = correctedMessages.findLastIndex(m => m.role === 'user');
+        if (lastUserIdx !== -1) {
+          correctedMessages[lastUserIdx] = {
+            ...correctedMessages[lastUserIdx],
+            content: correctedMessages[lastUserIdx].content +
+              '\n\nIMPORTANT: Your previous response contained invalid JSON. ' +
+              'Output ONLY valid JSON. No markdown wrappers, no backtick code blocks, ' +
+              'no trailing commas, no unescaped control characters. Just raw JSON.'
+          };
+        }
+        messages = correctedMessages;
+        await sleep(retryDelayMs * attempt);
+      }
+    } catch (err) {
+      lastError = err.message;
+      log.warn(`[${label}] Attempt ${attempt}/${maxRetries} exception: ${err.message}`);
+      if (attempt < maxRetries) await sleep(retryDelayMs * attempt);
+    }
+  }
+
+  return { data: null, error: lastError, attempts: maxRetries };
 }
