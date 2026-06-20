@@ -1,6 +1,5 @@
-import { logError } from '../core/logger.mjs';
-import { callAI } from '../core/ai-client.mjs';
-import { parseAIJson } from '../core/json-parser.mjs';
+import { logError, log } from '../core/logger.mjs';
+import { callAIJson, sleep } from '../core/ai-client.mjs';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -9,17 +8,20 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const WORKSPACE_ROOT = path.resolve(__dirname, '../../../');
 
-
 const VAULT_PATH = path.join(WORKSPACE_ROOT, 'vault');
 const STATE_PATH = path.join(VAULT_PATH, '.system/state/.vault_state.json');
 const INBOX_PATH = path.join(WORKSPACE_ROOT, 'vault', '00_inbox');
 const KNOWLEDGE_PATH = path.join(VAULT_PATH, '01_thinking', 'knowledge');
-const MAX_MESSAGES = 30;
-const REQUEST_TIMEOUT_MS = 20_000;
+const MAX_MESSAGES = 200;
+const AI_MAX_RETRIES = 3;
+const AI_RETRY_DELAY_MS = 2000;
 
+const SYSTEM_PROMPT =
+  'You are an expert Knowledge Engineer. Capture ANY knowledge from conversations that could be useful later — including incremental learnings, evolving context, and softer insights. ' +
+  'Output ONLY valid JSON. No markdown, no explanation, no preamble.';
 
-const SYSTEM_PROMPT= 
-  `You are an expert Knowledge Engineer. Your job is to capture ANY knowledge from the conversation that could be useful later — including incremental learnings, evolving context, and softer insights, not just major revelations.
+const USER_PROMPT = (conversation) =>
+  `Analyze this conversation and extract knowledge.
 
 Extract knowledge that is:
 - NEW: Information not commonly known or specific to this context (tools, configs, workarounds, preferences, project decisions).
@@ -29,28 +31,29 @@ Extract knowledge that is:
 Do NOT extract: pure small talk, greetings, or content with zero informational value.
 
 Categorize into:
-1. KNOWLEDGE CLAIM: Insights, decisions, architectural patterns, lessons learned, or gotchas. Filename: MUST start with 'k-' (e.g., 'k-kebab-case-name.md').
-2. REFERENCE: Technical facts, API specs, constants, or configuration details. Filename: (e.g., 'ref-kebab-case-name.md').
-3. CONTEXT: User preferences, project status, working style, or situational notes. Filename: MUST start with 'ctx-' (e.g., 'ctx-user-prefers-concise-answers.md').
-
-OUTPUT FORMAT (JSON ONLY):
-{
-  "notes": [
-    {
-      "filename": "...",
-      "content": "# Title\\n\\n## Summary\\n[Brief summary]\\n\\n## Details\\n[Details/facts/context]\\n\\n## Related Concepts\\n- [Concept 1]\\n- [Concept 2]"
-    }
-  ]
-}
+1. KNOWLEDGE CLAIM: Insights, decisions, architectural patterns, lessons learned. Filename: MUST start with 'k-' (e.g., 'k-kebab-case-name.md').
+2. REFERENCE: Technical facts, API specs, constants, configuration. Filename: 'ref-kebab-case-name.md'.
+3. CONTEXT: User preferences, project status, working style. Filename: MUST start with 'ctx-' (e.g., 'ctx-user-prefers-concise-answers.md').
 
 RULES:
+- Filename MUST be kebab-case, start with correct prefix, end with .md.
+- Content MUST use Markdown with sections: # Title, ## Summary, ## Details, ## Related Concepts.
 - Be concise but comprehensive. Capture specifics, not just generalities.
 - Include subjective preferences and working decisions — these are knowledge too.
-- When in doubt about whether something is worth saving, SAVE IT. Missing knowledge is worse than an extra note.
-- Use Markdown for all content.
-- Always in english language.
-- If truly nothing worth saving (no facts, no decisions, no preferences, no context), return {"notes": []}.
-- NO preamble, NO markdown code blocks, NO conversational filler.`;
+- When in doubt, SAVE IT. Missing knowledge is worse than an extra note.
+- Always in English language.
+- Max 10 notes per extraction.
+- If nothing worth saving, return: {"notes": []}
+
+Example:
+→ {"notes": [{"filename": "k-react-hooks-optimize-performance.md", "content": "# React Hooks Optimize Performance\\n\\n## Summary\\nReact hooks reduce re-renders through memoization.\\n\\n## Details\\nUse useMemo and useCallback to stabilize references.\\n\\n## Related Concepts\\n- Component lifecycle\\n- Rendering optimization"}]}
+
+Conversation:
+<<user_content>
+${conversation}
+</user_content>
+
+Output:`;
 
 function getMessageText(content) {
   if (typeof content === 'string') return content;
@@ -101,6 +104,7 @@ function stripUntrustedMetadata(text) {
 }
 
 function parseTranscript(transcriptPath) {
+  if (!fs.existsSync(transcriptPath)) return [];
   const raw = fs.readFileSync(transcriptPath, 'utf8');
   const lines = raw.split(/\r?\n/);
   const messages = [];
@@ -148,38 +152,38 @@ function sanitizeFilename(filename) {
   return `${base || 'note'}.md`;
 }
 
-
+function validateNotes(data) {
+  if (!data || typeof data !== 'object') return { notes: [] };
+  if (!Array.isArray(data.notes)) return { notes: [] };
+  return {
+    notes: data.notes
+      .filter(n => n && typeof n.filename === 'string' && typeof n.content === 'string')
+      .slice(0, 10)
+  };
+}
 
 async function extractNotes(conversation) {
-  try {
-  const content = await callAI([
+  const { data, error, attempts } = await callAIJson([
     { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: conversation },
-  ], { temperature: 0.2, timeoutMs: REQUEST_TIMEOUT_MS });
+    { role: 'user', content: USER_PROMPT(conversation) },
+  ], { 
+    temperature: 0.2, 
+    maxRetries: AI_MAX_RETRIES, 
+    retryDelayMs: AI_RETRY_DELAY_MS, 
+    promptLabel: 'distiller.mjs' 
+  });
 
-    if (content == null) {
-      console.error('⚠️ AI returned empty response (both providers may have failed).');
-      return { notes: [] };
-    }
-
-    console.error('🔍 AI output received, length:', content?.length ?? 0);
-
-    if (typeof content === 'string') {
-      const { data, error } = parseAIJson(content, 'distiller.mjs');
-      if (data) {
-        console.error('✅ AI extraction successful.');
-        return data;
-      }
-      if (error) {
-        console.error(`🚨 JSON parse failed: ${error}`);
-      }
-    }
-  } catch (err) {
-    console.error(`⚠️ AI extraction failed: ${err.message}`);
-    logError('distiller.mjs', err);
+  if (data) {
+    log.success(`[Distiller] ✅ AI extraction successful (${attempts} attempt(s)).`);
+    return validateNotes(data);
   }
 
-  console.error('🛡️ Graceful Degradation: No knowledge extracted.');
+  if (error) {
+    log.warn(`[Distiller] ⚠️ AI extraction failed after ${attempts} attempts: ${error}`);
+    logError('distiller.mjs', new Error(error));
+  }
+
+  log.info('[Distiller] 🛡️ Graceful Degradation: No knowledge extracted.');
   return { notes: [] };
 }
 
@@ -234,11 +238,11 @@ async function writeNotes(notes, transcriptPath) {
     if (typeof note?.filename !== 'string' || typeof note.content !== 'string') continue;
 
     const filename = sanitizeFilename(note.filename);
-    
+
     let dup = false;
     for (const ex of existingNames) {
       if (filenameSimilarity(ex, filename) > 0.85) {
-        console.error(`🔄 Duplicate skipped: ${filename} ≈ ${ex}`);
+        log.info(`[Distiller] 🔄 Duplicate skipped: ${filename} ≈ ${ex}`);
         dup = true; break;
       }
     }
@@ -291,7 +295,7 @@ async function main() {
   }
 
   if (!transcriptPath || !fs.existsSync(transcriptPath)) {
-    console.error('No transcript found.');
+    log.error('[Distiller] ❌ No transcript found.');
     process.exitCode = 1;
     return;
   }
@@ -312,7 +316,7 @@ async function main() {
   }
 
   if (messages.length === 0) {
-    console.error('No valid messages to extract.');
+    log.warn('[Distiller] No valid messages to extract.');
     return;
   }
 
@@ -320,17 +324,17 @@ async function main() {
   const result = await extractNotes(conversation);
   const notes = (result && Array.isArray(result.notes)) ? result.notes : [];
   const count = await writeNotes(notes, transcriptPath);
-  
-  console.error(`📊 Distillation complete. Total extracted: ${count} notes.`);
+
+  log.info(`[Distiller] 📊 Distillation complete. Extracted: ${count} notes.`);
   if (count > 0) {
-    console.error(`✅ Extracted ${count} notes to vault/00_inbox.`);
+    log.success(`[Distiller] ✅ Extracted ${count} notes to vault/00_inbox.`);
   } else {
-    console.error(`ℹ️ No new knowledge to save.`);
+    log.info('[Distiller] ℹ️ No new knowledge to save.');
   }
 }
 
 main().catch(err => {
-  console.error('Knowledge Distiller Error:', err.message);
+  log.error(`[Distiller] ❌ Knowledge Distiller Error: ${err.message}`);
   logError('distiller.mjs', err);
   process.exitCode = 1;
 });
