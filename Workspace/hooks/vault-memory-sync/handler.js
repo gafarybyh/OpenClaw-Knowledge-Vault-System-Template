@@ -1,9 +1,7 @@
-const { exec } = require('child_process');
-const { promisify } = require('util');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-
-const execAsync = promisify(exec);
+const os = require('os');
 
 // ─── Configuration ─────────────────────────────────────────────────
 const CONFIG = {
@@ -190,24 +188,60 @@ class TaskRunner {
     console.log(`\n${'━'.repeat(40)}`);
     console.log(`[memory-sync] (${index}/${total}) ▶ Starting ${task.name}`);
 
-    const { stdout, stderr } = await execAsync(task.cmd, {
-      cwd: this.workspaceDir,
-      timeout: this.config.TASK_TIMEOUT_MS,
-      maxBuffer: this.config.MAX_BUFFER,
-      env: {
-        ...process.env,
-        FORCE_COLOR: '1',
-      },
+    // Parse cmd into program + args for spawn (real-time streaming)
+    const { program, args } = parseCommand(task.cmd);
+
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(program, args, {
+        cwd: this.workspaceDir,
+        env: { ...process.env, FORCE_COLOR: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      child.stdout.on('data', (chunk) => {
+        const text = chunk.toString();
+        stdout += text;
+        process.stdout.write(text); // ← real-time
+      });
+
+      child.stderr.on('data', (chunk) => {
+        const text = chunk.toString();
+        stderr += text;
+        process.stderr.write(text); // ← real-time
+      });
+
+      const timer = setTimeout(() => {
+        child.kill('SIGTERM');
+        reject(new Error(`Timeout (${this.config.TASK_TIMEOUT_MS / 1000}s)`));
+      }, this.config.TASK_TIMEOUT_MS);
+
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        if (code === 0) {
+          resolve({ stdout, stderr });
+        } else {
+          const err = new Error(`Exit code ${code}${stderr ? ': ' + stderr.trim().slice(0, 200) : ''}`);
+          err.code = code;
+          err.stderr = stderr;
+          err.stdout = stdout;
+          reject(err);
+        }
+      });
+
+      child.on('error', (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
     });
 
     const elapsed = ((Date.now() - started) / 1000).toFixed(1);
     console.log(`[memory-sync] ✓ ${task.name} completed (${elapsed}s)`);
 
-    if (stdout?.trim()) console.log(stdout.trim());
-    if (stderr?.trim()) console.warn(`[memory-sync] ⚠ ${task.name} stderr:`, stderr.trim());
-
     this.completedTasks.push(task.name);
-    return { success: true, stdout, stderr };
+    return { success: true, stdout: result.stdout, stderr: result.stderr };
   }
 
   delay(ms) {
@@ -230,6 +264,71 @@ function extractScriptPath(cmd) {
   return match?.[1] || match?.[2] || null;
 }
 
+// ─── Parse command string into program + args array [for spawn] ────
+function parseCommand(cmd) {
+  // Simple tokenizer: splits by spaces but respects quoted strings
+  const tokens = [];
+  let current = '';
+  let inQuote = null;
+
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (inQuote) {
+      if (ch === inQuote) {
+        inQuote = null;
+      } else {
+        current += ch;
+      }
+    } else if (ch === '"' || ch === "'") {
+      inQuote = ch;
+    } else if (ch === ' ') {
+      if (current) {
+        tokens.push(current);
+        current = '';
+      }
+    } else {
+      current += ch;
+    }
+  }
+  if (current) tokens.push(current);
+
+  return { program: tokens[0] || 'node', args: tokens.slice(1) };
+}
+
+// ─── Helper: Resolve transcript path ────────────────────────────────
+function resolveTranscriptPath(event) {
+  // Priority 1: previousSessionEntry.sessionFile (command:new/reset)
+  const prevFile = event.context?.previousSessionEntry?.sessionFile;
+  if (prevFile && fs.existsSync(prevFile)) return prevFile;
+
+  // Priority 2: sessionKey → sessions.json → sessionFile (session:compact:before)
+  const sessionKey = event.sessionKey;
+  if (sessionKey) {
+    // Derive agentId from sessionKey pattern "agent:<agentId>:..."
+    const agentMatch = sessionKey.match(/^agent:([^:]+):/);
+    const agentId = agentMatch ? agentMatch[1] : 'main';
+    const sessionsDir = path.join(os.homedir(), '.openclaw', 'agents', agentId, 'sessions');
+    const storePath = path.join(sessionsDir, 'sessions.json');
+
+    try {
+      const store = safeReadJson(storePath, {});
+      const entry = store[sessionKey];
+      if (entry) {
+        // Use sessionFile if available (has full path), otherwise construct it
+        if (entry.sessionFile && fs.existsSync(entry.sessionFile)) {
+          return entry.sessionFile;
+        }
+        const constructed = path.join(sessionsDir, entry.sessionId + '.jsonl');
+        if (fs.existsSync(constructed)) return constructed;
+      }
+    } catch (err) {
+      console.warn('[memory-sync] Failed to resolve transcript from session store:', err.message);
+    }
+  }
+
+  return null;
+}
+
 // ─── Main Handler ───────────────────────────────────────────────────
 const handler = async (event) => {
   // Validate event structure
@@ -240,7 +339,37 @@ const handler = async (event) => {
     event.messages = [];
   }
 
-  const workspaceDir = event.context?.workspaceDir || process.cwd();
+  // session:compact:before doesn't provide context.workspaceDir — load from .env or derive from hook location
+  function loadWorkspaceDir() {
+    // 1. event context (command:new/reset)
+    if (event.context?.workspaceDir) return event.context.workspaceDir;
+
+    // 2. Try loading .env from workspace-adjacent paths
+    const candidates = [
+      path.resolve(__dirname, '..', '..', '.env'),          // D:\Project\OpenClaw\Workspace\.env
+      path.resolve(os.homedir(), '.openclaw', '.env'),      // ~/.openclaw/.env
+    ];
+
+    for (const envPath of candidates) {
+      try {
+        if (fs.existsSync(envPath)) {
+          const content = fs.readFileSync(envPath, 'utf8');
+          for (const line of content.split('\n')) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('WORKSPACE_DIR=')) {
+              const val = trimmed.slice('WORKSPACE_DIR='.length).replace(/^['"]|['"]$/g, '');
+              if (val) return val;
+            }
+          }
+        }
+      } catch (_) { /* ignore */ }
+    }
+
+    // 3. Fallback: derive from hook location
+    return path.resolve(__dirname, '..', '..');
+  }
+
+  const workspaceDir = loadWorkspaceDir();
 
   const CACHE_DIR = path.join(workspaceDir, 'vault', '.system', 'cache');
   const DEBUG_FILE = path.join(CACHE_DIR, 'event-debug.json');
@@ -299,65 +428,75 @@ const handler = async (event) => {
     return;
   }
 
+  // ─── Compact Event: log context ─────────────────────────────────
+  const isCompactEvent = event.type === 'session' && event.action === 'compact:before';
+  if (isCompactEvent) {
+    console.log('[memory-sync] session:compact:before (' + (event.context?.messageCount || '?') + ' messages, ' + (event.context?.tokenCount || '?') + ' tokens)');
+  }
+
   // ─── Build Task List ─────────────────────────────────────────────
   const prevSession = event.context?.previousSessionEntry;
+  const sessionTraceFile = resolveTranscriptPath(event);
+
+  // Use sessionFile priority: previousSessionEntry > resolved from sessionKey
+  const transcriptFile = prevSession?.sessionFile || sessionTraceFile;
   const scriptsDir = path.join(workspaceDir, 'vault', 'scripts');
 
   const tasks = [
     {
       name: 'Distiller',
-      cmd: prevSession?.sessionFile
-        ? `node "${scriptsDir}/graph/distiller.mjs" "${prevSession.sessionFile}"`
+      cmd: transcriptFile
+        ? 'node "' + scriptsDir + '/graph/distiller.mjs" "' + transcriptFile + '"'
         : null,
       critical: false,
     },
     {
       name: 'Learning Collector',
-      cmd: prevSession?.sessionFile
-        ? `node "${scriptsDir}/learning/learning-collector.mjs" "${prevSession.sessionFile}"`
+      cmd: transcriptFile
+        ? 'node "' + scriptsDir + '/learning/learning-collector.mjs" "' + transcriptFile + '"'
         : null,
       critical: false,
     },
     {
       name: 'Learning Synthesizer',
-      cmd: `node "${scriptsDir}/learning/learning-synthesizer.mjs"`,
+      cmd: 'node "' + scriptsDir + '/learning/learning-synthesizer.mjs"',
       critical: false,
     },
     {
       name: 'Reflection Engine',
-      cmd: prevSession?.sessionFile
-        ? `node "${scriptsDir}/learning/reflection.mjs" "${prevSession.sessionFile}"`
+      cmd: transcriptFile
+        ? 'node "' + scriptsDir + '/learning/reflection.mjs" "' + transcriptFile + '"'
         : null,
       critical: false,
     },
     {
       name: 'Reflection Synthesizer',
-      cmd: `node "${scriptsDir}/learning/reflection-synthesizer.mjs"`,
+      cmd: 'node "' + scriptsDir + '/learning/reflection-synthesizer.mjs"',
       critical: false,
     },
     {
       name: 'Inbox Processor',
-      cmd: `node "${scriptsDir}/maintenance/process-inbox.mjs"`,
+      cmd: 'node "' + scriptsDir + '/maintenance/process-inbox.mjs"',
       critical: false,
     },
     {
       name: 'Semantic Linker',
-      cmd: `node "${scriptsDir}/graph/linker.mjs"`,
+      cmd: 'node "' + scriptsDir + '/graph/linker.mjs"',
       critical: false,
     },
     {
       name: 'Graph Indexer',
-      cmd: `node "${scriptsDir}/graph/indexer.mjs"`,
+      cmd: 'node "' + scriptsDir + '/graph/indexer.mjs"',
       critical: false,
     },
     {
       name: 'Memory Sync',
-      cmd: `node "${scriptsDir}/maintenance/update-memory.mjs"`,
+      cmd: 'node "' + scriptsDir + '/maintenance/update-memory.mjs"',
       critical: true,
     },
     {
       name: 'Graph View',
-      cmd: `node "${scriptsDir}/maintenance/generate-graph-html.mjs"`,
+      cmd: 'node "' + scriptsDir + '/maintenance/generate-graph-html.mjs"',
       critical: false,
     },
   ];
@@ -448,7 +587,13 @@ const handler = async (event) => {
     }
   })();
 
-  event.messages.push('✅ New session started. Memory sync is running in the background...');
+  // ─── Completion message (only delivered on replyable surfaces) ──
+  if (isCompactEvent) {
+    // lifecycle-only events ignore messages; log only
+    console.log('[memory-sync] Hook completed for session:compact:before');
+  } else {
+    event.messages.push('✅ New session started. Memory sync is running in the background...');
+  }
 };
 
 module.exports = handler;
