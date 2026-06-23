@@ -564,7 +564,11 @@ function shouldCompare(aName, bName, aKeywords, bKeywords, aFolder, bFolder, aTy
 // ==================== MAIN ====================
 async function main() {
   const t0 = Date.now();
-  console.error(`🚀 Linker v${CACHE_VERSION} OPTIMAL | DryRun: ${DRY_RUN} | DeepVerify: ${DEEP_VERIFY}`);
+  console.error(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  console.error(`  LINKER v${CACHE_VERSION} OPTIMAL`);
+  console.error(`  Mode        : ${DRY_RUN ? 'DRY-RUN' : 'LIVE'} | DeepVerify: ${DEEP_VERIFY}`);
+  console.error(`  Threshold   : ${SIMILARITY_THRESHOLD} | MaxCand: ${MAX_CANDIDATES_PER_FILE}`);
+  console.error(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
   logMetric('workflow_start', { model: AI_CONFIG.embedding.model, dry_run: DRY_RUN, deep_verify: DEEP_VERIFY, version: CACHE_VERSION });
 
   const allFiles = globSync(`${VAULT_PATH}/**/*.md`);
@@ -617,7 +621,12 @@ async function main() {
   const newFiles = new Set();
   let cacheUpdated = false;
 
-  console.error(`📁 Processing ${files.length} files | Cache: ${Object.keys(cache).filter(k => !k.startsWith('__')).length} entries`);
+  const cacheEntries = Object.keys(cache).filter(k => !k.startsWith('__')).length;
+  console.error(`\n── FILES ──────────────────────────────────`);
+  console.error(`  Files     : ${files.length}`);
+  console.error(`  Vault refs: ${scopeFiles.length}`);
+  console.error(`  Cache     : ${cacheEntries} entries`);
+  if (isIncremental) console.error(`  Mode      : INCREMENTAL (${files.length} staged files)`);
 
   const tasks = [];
   for (const file of files) {
@@ -691,7 +700,10 @@ async function main() {
     if (!cache[t.name]) newFiles.add(t.name);
   }
 
-  console.error(`⏭️  Cached: ${skipped} | Link-only: ${linkOnlyChange} | Need embed: ${need}`);
+  console.error(`\n── EMBEDDING ──────────────────────────────`);
+  console.error(`  Cached     : ${skipped}`);
+  console.error(`  Link-only  : ${linkOnlyChange}`);
+  console.error(`  Need embed : ${need}`);
 
   // ==================== EMBEDDING PHASE ====================
   const tEmbed = Date.now();
@@ -741,9 +753,23 @@ async function main() {
     });
     cacheUpdated = true;
   } else {
-    console.error(`\n⏭️  No files need embedding.`);
+    console.error(`  ⏭️  No files need embedding.`);
   }
-  console.error(`⏱️  Embedding phase: ${((Date.now() - tEmbed) / 1000).toFixed(1)}s`);
+  console.error(`  ⏱️  ${((Date.now() - tEmbed) / 1000).toFixed(1)}s`);
+
+  // Incremental fix v16.1: load cached vault embeddings early
+  // so cache cleaning doesn't wipe them, and discovery can cross-link
+  let loadedVaultRefs = 0;
+  if (isIncremental) {
+    for (const f of scopeFiles) {
+      const n = path.basename(f, '.md');
+      if (!embeddings[n] && cache[n] && Array.isArray(cache[n].embedding) && cache[n].embedding.length > 0) {
+        embeddings[n] = cache[n].embedding;
+        loadedVaultRefs++;
+      }
+    }
+    console.error(`  Vault refs loaded: ${loadedVaultRefs} (incremental cross-link)`);
+  }
 
   // ==================== CACHE CLEANING ====================
   const current = new Set(Object.keys(embeddings));
@@ -753,13 +779,13 @@ async function main() {
     if (current.has(k)) cleaned[k] = cache[k];
     else removed++;
   }
-  if (removed > 0) { console.error(`🧹 Removed ${removed} obsolete cache entries`); cacheUpdated = true; }
+  if (removed > 0) { console.error(`  🧹 Removed ${removed} obsolete cache entries`); cacheUpdated = true; }
 
   const ok = Object.entries(cleaned).filter(([_, v]) => Array.isArray(v.embedding) && v.embedding.length > 0).length;
-  console.error(`📦 Cache: ${ok}/${Object.keys(cleaned).length} have embeddings`);
+  console.error(`  Cache: ${ok}/${Object.keys(cleaned).length} valid`);
   if (cacheUpdated) {
     saveCache(cleaned);
-    console.error(`✅ Saved: ${ok} cache entries`);
+    console.error(`  ✅ Saved ${ok} cache entries`);
   }
 
   // ==================== PRUNING PHASE ====================
@@ -778,9 +804,9 @@ async function main() {
     }
   }
 
-  console.error(`\n🧹 Pruning phase...`);
-  console.error(`   Semantic-dirty files: ${semanticDirtyFiles.size}`);
-  console.error(`   Deep Verify: ${IS_DEEP_VERIFY}`);
+  console.error(`\n── PRUNING ────────────────────────────────`);
+  console.error(`  Semantic-dirty: ${semanticDirtyFiles.size}`);
+  console.error(`  Deep Verify   : ${IS_DEEP_VERIFY}`);
 
   for (const file of files) {
     const a = path.basename(file, '.md');
@@ -836,9 +862,10 @@ async function main() {
       }
     }
   }
-  console.error(`📊 Structural pruned: ${structuralPruned} | Semantic pruned: ${semanticPruned}`);
-  console.error(`   Files AI-checked: ${filesChecked} | Links checked: ${linksChecked}`);
-  console.error(`⏱️  Pruning phase: ${((Date.now() - tPrune) / 1000).toFixed(1)}s`);
+  console.error(`  Structural : ${structuralPruned} pruned`);
+  console.error(`  Semantic   : ${semanticPruned} pruned, ${updated} updated`);
+  console.error(`  Files      : ${filesChecked} checked | ${linksChecked} links`);
+  console.error(`  ⏱️  ${((Date.now() - tPrune) / 1000).toFixed(1)}s`);
 
   // ==================== DISCOVERY PHASE ====================
   const tDisc = Date.now();
@@ -855,7 +882,7 @@ async function main() {
       ? names.filter(n => dirtyFiles.has(n) || semanticDirtyFiles.has(n) || newFiles.has(n))
       : names;
 
-    console.error(`   Source files for discovery: ${sourceNames.length}`);
+    console.error(`  Source files: ${sourceNames.length} (total vault: ${names.length})`);
 
     await processSequential(sourceNames, async (a) => {
       const isAnew = newFiles.has(a);
@@ -899,7 +926,7 @@ async function main() {
         const b = cand.name;
         const pa = nameToPath[a];
         const pb = nameToPath[b];
-        if (!pa || !pb) return;
+        if (!pa || !pb) continue;
 
         const isNewPair = isAnew || newFiles.has(b);
         console.error(`🔎 ${a} <-> ${b} (sim: ${cand.score.toFixed(3)})${isNewPair ? ' [NEW]' : ''}`);
@@ -921,13 +948,22 @@ async function main() {
         }
       }
     });
-    console.error(`📊 Pre-filtered: ${preFiltered} | Cosine: ${cosineChecked} | AI validated: ${pairsChecked} | New: ${newFiles.size}`);
+    console.error(`  Pre-filter : ${preFiltered}`);
+    console.error(`  Cosine     : ${cosineChecked}`);
+    console.error(`  AI verified: ${pairsChecked}`);
+    console.error(`  New files  : ${newFiles.size}`);
   }
-  console.error(`⏱️  Discovery phase: ${((Date.now() - tDisc) / 1000).toFixed(1)}s`);
+  console.error(`  ⏱️  ${((Date.now() - tDisc) / 1000).toFixed(1)}s`);
 
   // ==================== SUMMARY & SYNC ====================
   const totalTime = ((Date.now() - t0) / 1000).toFixed(1);
-  console.error(`\n✨ Done in ${totalTime}s. Added: ${added} | Updated: ${updated} | Pruned: ${pruned} | New files: ${newFiles.size}`);
+  console.error(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  console.error(`  ✅ DONE in ${totalTime}s`);
+  console.error(`  Added   : ${added}`);
+  console.error(`  Updated : ${updated}`);
+  console.error(`  Pruned  : ${pruned}`);
+  console.error(`  New     : ${newFiles.size} files`);
+  console.error(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
   logMetric('workflow_complete', { added, updated, pruned, total_seconds: parseFloat(totalTime) });
 
   // Update state
@@ -949,16 +985,18 @@ async function main() {
   });
 
   if (DRY_RUN) {
-    console.error('\n🏃 Dry run: skipped sync.');
+    console.error('  🏃 Dry run — no files modified.');
   } else if (added === 0 && pruned === 0 && updated === 0 && !needsUpgrade) {
-    console.error('\nℹ️ No changes: skipped sync.');
+    console.error('  ℹ️  No changes — sync skipped.');
   } else {
-    console.error(`\n✨ Linker finished. Changes detected (Added: ${added}, Updated: ${updated}, Pruned: ${pruned}). Please run Graph Indexer to sync changes.`);
+    console.error('  Graph indexer needed to sync changes.');
   }
 }
 
 main().catch(err => {
   logMetric('workflow_fatal_error', { error: err.message, stack: err.stack });
-  console.error('💥 Fatal:', err);
+  console.error('\n── FATAL ───────────────────────────────────');
+  console.error('  Message:', err.message);
+  console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   process.exit(1);
 });
