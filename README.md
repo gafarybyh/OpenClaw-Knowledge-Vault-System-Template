@@ -267,7 +267,7 @@ The vault's functionality is powered by a suite of Node.js scripts. Each is desi
 The vault's "metabolism" is powered by the **OpenClaw Agent Infrastructure**, using a combination of reactive and scheduled triggers:
 
 ### ⚡ Trigger Mechanisms
-- **Event-Driven (Hooks)**: Reactive scripts (located in `hooks/`) that trigger immediately upon specific hooks events (`command:new` or `command:reset`) to ensure real-time memory synchronization.
+- **Event-Driven (Hooks)**: Reactive scripts (located in `hooks/`) that trigger immediately upon specific hooks events (`command:new` or `command:reset` or `session:compact:before`) to ensure real-time memory synchronization.
 
   **Important:** Ensure you **ADD** and **ENABLE** these custom hooks (`vault-memory-sync`) within your `OpenClaw.json` configuration to activate this functionality.
 
