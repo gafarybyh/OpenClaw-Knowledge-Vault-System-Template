@@ -30,7 +30,7 @@ function safeWriteJson(filePath, data) {
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
     return true;
   } catch (err) {
-    console.error('[memory-sync] Failed to write JSON:', err.message);
+    console.error('  ❌ Failed to write JSON:', err.message);
     return false;
   }
 }
@@ -76,13 +76,13 @@ class LockManager {
 
     // Stale lock detection
     if (age > CONFIG.LOCK_STALE_MS) {
-      console.warn(`[memory-sync] Removing stale lock (age: ${(age / 60000).toFixed(1)} min)`);
+      console.warn(`  🗑️ Stale lock removed (age: ${(age / 60000).toFixed(1)} min)`);
       this.removeLock();
       return null;
     }
 
     // Process dead but lock not stale yet — treat as stale to unblock
-    console.warn('[memory-sync] Lock held by dead process, reclaiming');
+    console.warn('  🗑️ Lock held by dead process, reclaimed');
     this.removeLock();
     return null;
   }
@@ -100,7 +100,7 @@ class LockManager {
         fs.unlinkSync(this.lockFile);
       }
     } catch (err) {
-      console.error('[memory-sync] Remove lock failed:', err.message);
+      console.error('  ❌ Remove lock failed:', err.message);
     }
   }
 }
@@ -118,7 +118,7 @@ class Logger {
     try {
       fs.appendFileSync(this.logFile, message, 'utf8');
     } catch (e) {
-      console.error('[memory-sync] Log write failed:', e.message);
+      console.error('  ❌ Log write failed:', e.message);
     }
   }
 }
@@ -157,7 +157,7 @@ class TaskRunner {
       } catch (err) {
         lastError = err;
         if (attempt < this.config.RETRY_ATTEMPTS) {
-          console.log(`[memory-sync] ↻ Retrying ${task.name} (attempt ${attempt + 1}/${this.config.RETRY_ATTEMPTS})...`);
+          console.log(`  ↻ ${task.name} (attempt ${attempt + 1}/${this.config.RETRY_ATTEMPTS})...`);
           await this.delay(this.config.RETRY_DELAY_MS);
         }
       }
@@ -167,7 +167,7 @@ class TaskRunner {
 
   async runOnce(task, index, total) {
     if (!task.cmd) {
-      console.log(`[memory-sync] (${index}/${total}) ⏭ ${task.name} skipped`);
+      console.log(`  ⏭ (${index}/${total}) ${task.name} skipped`);
       return { skipped: true };
     }
 
@@ -185,8 +185,7 @@ class TaskRunner {
     });
 
     const started = Date.now();
-    console.log(`\n${'━'.repeat(40)}`);
-    console.log(`[memory-sync] (${index}/${total}) ▶ Starting ${task.name}`);
+    console.log(`  ▶ (${index}/${total}) ${task.name}...`);
 
     // Parse cmd into program + args for spawn (real-time streaming)
     const { program, args } = parseCommand(task.cmd);
@@ -238,7 +237,7 @@ class TaskRunner {
     });
 
     const elapsed = ((Date.now() - started) / 1000).toFixed(1);
-    console.log(`[memory-sync] ✓ ${task.name} completed (${elapsed}s)`);
+    console.log(`  ✓ ${task.name} (${elapsed}s)`);
 
     this.completedTasks.push(task.name);
     return { success: true, stdout: result.stdout, stderr: result.stderr };
@@ -322,7 +321,7 @@ function resolveTranscriptPath(event) {
         if (fs.existsSync(constructed)) return constructed;
       }
     } catch (err) {
-      console.warn('[memory-sync] Failed to resolve transcript from session store:', err.message);
+      console.warn('  ⚠️ Failed to resolve transcript from session store:', err.message);
     }
   }
 
@@ -391,21 +390,21 @@ const handler = async (event) => {
 
   // ─── Signal Handlers for Cleanup (once-only to prevent stacking) ──
   const onSignal = (sig) => {
-    console.log(`\n[memory-sync] Received ${sig}, cleaning up...`);
+    console.log(`\n  ⛔ Received ${sig}, cleaning up...`);
     lockManager.removeLock();
     statusManager.write('interrupted', { reason: sig });
     process.exit(1);
   };
 
   const onUncaught = (err) => {
-    console.error('[memory-sync] Uncaught Exception:', err);
+    console.error('  ❌ Uncaught Exception:', err);
     logger.error('UncaughtException', err);
     lockManager.removeLock();
     process.exit(1);
   };
 
   const onRejection = (reason) => {
-    console.error('[memory-sync] Unhandled Rejection:', reason);
+    console.error('  ❌ Unhandled Rejection:', reason);
     logger.error('UnhandledRejection', new Error(String(reason)));
   };
 
@@ -423,7 +422,7 @@ const handler = async (event) => {
   const lockInfo = lockManager.isLocked();
   if (lockInfo) {
     const msg = `⚠️ Memory sync already running (PID: ${lockInfo.pid || 'unknown'}).`;
-    console.log(`[memory-sync] ${msg}`);
+    console.log(`  ${msg}`);
     event.messages.push(msg);
     return;
   }
@@ -431,7 +430,7 @@ const handler = async (event) => {
   // ─── Compact Event: log context ─────────────────────────────────
   const isCompactEvent = event.type === 'session' && event.action === 'compact:before';
   if (isCompactEvent) {
-    console.log('[memory-sync] session:compact:before (' + (event.context?.messageCount || '?') + ' messages, ' + (event.context?.tokenCount || '?') + ' tokens)');
+    console.log(`  📦 Compact event: ${event.context?.messageCount || '?'} msgs, ${event.context?.tokenCount || '?'} tokens`);
   }
 
   // ─── Build Task List ─────────────────────────────────────────────
@@ -513,14 +512,14 @@ const handler = async (event) => {
   const runner = new TaskRunner({ workspaceDir, logger, statusManager, config: CONFIG });
   const startedAt = Date.now();
 
-  console.log(`\n${'═'.repeat(40)}`);
-  console.log('[memory-sync] Starting sync pipeline');
-  console.log(`[memory-sync] Tasks: ${tasks.filter(t => t.cmd).length} active / ${tasks.length} total`);
-  console.log(`${'═'.repeat(40)}\n`);
+  console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  console.log(`  PIPELINE SYNC`);
+  console.log(`  Active: ${tasks.filter(t => t.cmd).length} / ${tasks.length} tasks`);
+  console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
 
   // Execute pipeline in background (with overall timeout guard)
   const pipelineTimer = setTimeout(() => {
-    console.error(`[memory-sync] Pipeline timeout (${CONFIG.PIPELINE_TIMEOUT_MS / 60000} min), force-releasing lock`);
+    console.error(`  ⏰ Pipeline timeout (${CONFIG.PIPELINE_TIMEOUT_MS / 60000} min), force-releasing lock`);
     lockManager.removeLock();
     statusManager.write('failed', { error: 'Pipeline timeout' });
   }, CONFIG.PIPELINE_TIMEOUT_MS);
@@ -528,26 +527,71 @@ const handler = async (event) => {
 
   (async () => {
     try {
-      for (let i = 0; i < tasks.length; i++) {
-        const task = tasks[i];
-        try {
-          await runner.runWithRetry(task, i + 1, tasks.length);
-        } catch (err) {
+      // ─── Helper: run a batch of tasks with max concurrency ──────
+      const byName = (name) => tasks.find(t => t.name === name) || { cmd: null, name, critical: false };
+
+      const runGroup = async (subset, label, concurrency) => {
+        const active = subset.filter(t => t.cmd);
+        if (active.length === 0) {
+          console.log(`  ⏭ Group "${label}" — no active tasks`);
+          return;
+        }
+
+        console.log(`\n── ${label} ──────────────────────────────────`);
+        console.log(`  Tasks: ${active.length} | Concurrency: ${concurrency}`);
+
+        let nextIdx = 0;
+        const errors = [];
+
+        const worker = async () => {
+          while (nextIdx < subset.length) {
+            const idx = nextIdx++;
+            const task = subset[idx];
+            if (!task.cmd) continue;
+            try {
+              await runner.runWithRetry(task, idx + 1, tasks.length);
+            } catch (err) {
+              errors.push({ task, err });
+            }
+          }
+        };
+
+        const pool = Array.from({ length: Math.min(concurrency, active.length) }, () => worker());
+        await Promise.all(pool);
+
+        // Process failures after all tasks finish — critical check at end
+        for (const { task, err } of errors) {
           runner.failedTasks.push({ name: task.name, error: err.message });
           logger.error(task.name, err);
-
           const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
-          console.error(`[memory-sync] ✗ ${task.name} failed (${elapsed}s)`);
-          console.error(`[memory-sync]   → ${err.message}`);
-
+          console.error(`  ✗ ${task.name} (${elapsed}s)`);
+          console.error(`    → ${err.message}`);
           if (task.critical) {
-            throw new Error(`Critical task "${task.name}" failed: ${err.message}`);
+            throw new Error('Critical "' + task.name + '" failed: ' + err.message);
           }
-
-          console.log(`[memory-sync]   → Continuing (non-critical task)...`);
+          console.log(`    → Continuing (non-critical)...`);
         }
-      }
+      };
 
+      // ─── Phase 1: Distiller + Collector + Reflection (max 2 AI) ─
+      await runGroup([byName('Distiller'), byName('Learning Collector'), byName('Reflection Engine')], 'Extract', 2);
+
+      // ─── Phase 2: Inbox Processor (tunggu distiller selesai) ────
+      await runGroup([byName('Inbox Processor')], 'Inbox', 1);
+
+      // ─── Phase 3: Synthesizers (max 2 AI) ───────────────────────
+      await runGroup([byName('Learning Synthesizer'), byName('Reflection Synthesizer')], 'Synthesize', 2);
+
+      // ─── Phase 4: Linker (single, AI-heavy) ─────────────────────
+      await runGroup([byName('Semantic Linker')], 'Linker', 1);
+
+      // ─── Phase 5: Indexer + Memory Sync (non-AI, parallel) ──────
+      await runGroup([byName('Graph Indexer'), byName('Memory Sync')], 'Index & Sync', 2);
+
+      // ─── Phase 6: Graph View (non-AI) ───────────────────────────
+      await runGroup([byName('Graph View')], 'Graph View', 1);
+
+      // ─── Pipeline Complete ──────────────────────────────────────
       const totalTime = ((Date.now() - startedAt) / 1000).toFixed(1);
       const allSuccess = runner.failedTasks.length === 0;
 
@@ -561,14 +605,14 @@ const handler = async (event) => {
       clearTimeout(pipelineTimer);
       lockManager.removeLock();
 
-      console.log(`\n${'═'.repeat(40)}`);
+      console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
       if (allSuccess) {
-        console.log(`[memory-sync] ✓ COMPLETED (${totalTime}s)`);
+        console.log(`  ✅ COMPLETED (${totalTime}s)`);
       } else {
-        console.log(`[memory-sync] ⚠ COMPLETED WITH ERRORS (${totalTime}s)`);
-        console.log(`[memory-sync] Failed: ${runner.failedTasks.map(t => t.name).join(', ')}`);
+        console.log(`  ⚠️  COMPLETED WITH ERRORS (${totalTime}s)`);
+        console.log(`  Failed: ${runner.failedTasks.map(t => t.name).join(', ')}`);
       }
-      console.log(`${'═'.repeat(40)}\n`);
+      console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
     } catch (error) {
       const totalTime = ((Date.now() - startedAt) / 1000).toFixed(1);
       logger.error('Critical Background Handler', error);
@@ -580,17 +624,17 @@ const handler = async (event) => {
       clearTimeout(pipelineTimer);
       lockManager.removeLock();
 
-      console.error(`\n${'═'.repeat(40)}`);
-      console.error(`[memory-sync] ✗ FATAL ERROR (${totalTime}s)`);
-      console.error(`[memory-sync] ${error.message}`);
-      console.error(`${'═'.repeat(40)}\n`);
+      console.error(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      console.error(`  ❌ FATAL ERROR (${totalTime}s)`);
+      console.error(`  ${error.message}`);
+      console.error(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
     }
   })();
 
   // ─── Completion message (only delivered on replyable surfaces) ──
   if (isCompactEvent) {
     // lifecycle-only events ignore messages; log only
-    console.log('[memory-sync] Hook completed for session:compact:before');
+    console.log('  ✅ Hook completed for session:compact:before');
   } else {
     event.messages.push('✅ New session started. Memory sync is running in the background...');
   }
